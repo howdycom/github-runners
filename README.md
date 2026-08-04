@@ -33,8 +33,12 @@ Runners come in two tiers, each independently scalable with its own labels and r
 
 | Tier  | Default labels               | Default count | Default limits |
 |-------|------------------------------|---------------|----------------|
-| heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 8 GB   |
-| light | `docker,ubuntu-22.04,light`  | 4             | 1 CPU, 2 GB    |
+| heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 16 GB  |
+| light | `docker,ubuntu-22.04,light`  | 8             | 1 CPU, 2 GB    |
+
+The heavy tier defaults match a GitHub-hosted `ubuntu-latest` standard runner (4 vCPUs, 16 GB) so jobs sized for hosted runners behave the same way here.
+
+> **`cpus` and `mem_limit` are ceilings, not reservations.** The defaults above sum to well more than a single 16 GB box provides, which is intentional — it lets any one job burst to a full hosted-runner allocation instead of capping every job at `RAM ÷ runners`. The tradeoff is that several large jobs running at once will contend and push into zRAM/swap rather than being individually throttled. Lower `github_runner_heavy_memory` if you would rather have hard per-job protection than hosted-runner parity.
 
 ## Prerequisites
 - You must be an organization owner or have appropriate permissions to manage runners at the organization level.
