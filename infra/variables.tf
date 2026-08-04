@@ -5,9 +5,9 @@ variable "docker_host" {
 }
 
 variable "ssh_user" {
-  description = "SSH user for remote Docker host"
+  description = "SSH user for a remote Docker host. Ignored when docker_host already embeds a user (ssh://user@host)."
   type        = string
-  default     = "michael"
+  default     = ""
 }
 
 variable "enable_portainer" {
@@ -35,16 +35,28 @@ variable "github_runner_token" {
   sensitive   = true
 }
 
-variable "github_runner_count" {
-  description = "Number of GitHub Actions runner containers to deploy"
+variable "github_runner_heavy_count" {
+  description = "Number of heavy (Docker/build workload) runner containers to deploy"
   type        = number
-  default     = 1
+  default     = 2
 }
 
-variable "github_runner_labels" {
-  description = "Comma-separated labels for the runner"
+variable "github_runner_light_count" {
+  description = "Number of light (CI job) runner containers to deploy"
+  type        = number
+  default     = 4
+}
+
+variable "github_runner_heavy_labels" {
+  description = "Comma-separated labels for heavy runners"
   type        = string
-  default     = "docker,ubuntu-22.04"
+  default     = "docker,ubuntu-22.04,heavy"
+}
+
+variable "github_runner_light_labels" {
+  description = "Comma-separated labels for light runners"
+  type        = string
+  default     = "docker,ubuntu-22.04,light"
 }
 
 variable "github_runner_name_prefix" {
@@ -57,4 +69,16 @@ variable "github_runner_version" {
   description = "GitHub Actions runner version to install"
   type        = string
   default     = "2.323.0"
+}
+
+variable "zram_size_mib" {
+  description = "Size of the zRAM compressed swap device in MiB"
+  type        = number
+  default     = 8192
+}
+
+variable "swap_size_gib" {
+  description = "Size of the on-disk swap file in GiB"
+  type        = number
+  default     = 16
 }
