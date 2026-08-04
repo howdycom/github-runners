@@ -1,44 +1,53 @@
 services:
   github-runner-heavy:
+    image: github-runner:local
     build:
       context: .
     restart: unless-stopped
     # Give in-flight jobs and the deregistration cleanup time to finish on stop.
     stop_grace_period: 120s
+    cpus: ${HEAVY_CPUS:-4}
+    mem_limit: ${HEAVY_MEMORY:-8g}
     # Replica counts live here (fed from .env) rather than only in the deploy's
     # --scale flags, so a later bare `docker compose up -d` on the host does not
     # silently collapse each tier to a single runner.
     deploy:
-      replicas: ${RUNNER_HEAVY_REPLICAS:-2}
+      replicas: ${HEAVY_REPLICAS:-2}
     environment:
       GITHUB_ORG_URL: ${GITHUB_ORG_URL}
-      # Deliberately NOT named GITHUB_TOKEN: that name collides with the
-      # per-job token GitHub Actions injects, and start.sh unsets this from the
-      # environment before starting the listener so jobs cannot read it.
-      RUNNER_REGISTRATION_TOKEN: ${RUNNER_REGISTRATION_TOKEN}
-      RUNNER_LABELS: ${RUNNER_HEAVY_LABELS:-docker,ubuntu-22.04,heavy}
-      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}-heavy
+      # start.sh unsets this from the environment before starting the listener,
+      # so workflow jobs cannot read the credential.
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_LABELS: ${RUNNER_LABELS_HEAVY:-docker,ubuntu-22.04,heavy}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
+      RUNNER_TIER: heavy
       RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
     # Host docker group gid so the runner user can use the mounted socket
-    # (DOCKER_GID is appended to .env at deploy time).
+    # (DOCKER_GID is written to .env at deploy time).
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
   github-runner-light:
+    image: github-runner:local
     build:
       context: .
     restart: unless-stopped
     stop_grace_period: 120s
+    cpus: ${LIGHT_CPUS:-1}
+    mem_limit: ${LIGHT_MEMORY:-2g}
     deploy:
-      replicas: ${RUNNER_LIGHT_REPLICAS:-4}
+      replicas: ${LIGHT_REPLICAS:-4}
     environment:
       GITHUB_ORG_URL: ${GITHUB_ORG_URL}
-      RUNNER_REGISTRATION_TOKEN: ${RUNNER_REGISTRATION_TOKEN}
-      RUNNER_LABELS: ${RUNNER_LIGHT_LABELS:-docker,ubuntu-22.04,light}
-      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}-light
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_LABELS: ${RUNNER_LABELS_LIGHT:-docker,ubuntu-22.04,light}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
+      RUNNER_TIER: light
       RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:

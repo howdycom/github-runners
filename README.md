@@ -2,10 +2,6 @@
 
 This project manages a GitHub Actions runner host using Terraform and Docker, plus a Portainer UI for container management.
 
-Runners are deployed in two tiers:
-- **Heavy** runners (label `heavy`) for Docker/build workloads — 2 by default.
-- **Light** runners (label `light`) for lighter CI jobs — 4 by default.
-
 Terraform also prepares the host itself: it installs Docker if missing (enabled to start on boot via `systemctl enable docker`), configures zRAM (8 GiB by default) plus an on-disk swap file (16 GiB by default) to absorb memory spikes, and sets `restart: unless-stopped` on all runner containers — so the machine recovers on its own after a reboot or power loss and re-registers the runners without manual intervention.
 
 > **Note on unattended power-on:** the software side recovers by itself, but if the machine is fully powered off by an outage it still needs firmware to turn it back on. Set **Restore on AC Power Loss** (also called *AC Power Recovery*, *After Power Failure*, or *State after G3*) to **Power On** in BIOS, and disable **ErP / EuP Ready** if present — ErP cuts standby power and prevents auto-power-on regardless of that setting.
@@ -22,23 +18,49 @@ infra/            # Terraform configuration
     portainer/      # Portainer UI
 ```
 
+## How Registration Works
+Runner containers mint their own short-lived registration tokens at startup with `gh api` (`POST /orgs/{org}/actions/runners/registration-token`). On shutdown they mint a remove token the same way and deregister themselves.
+
+The credential behind those calls comes from your local **gh CLI** by default: at apply time Terraform runs `gh auth token` on your machine, verifies it can mint runner tokens, and ships it to the host's `.env` (mode 600). You never copy/paste a token. (Setting `github_runner_pat` explicitly overrides this, e.g. for CI.) This means:
+
+- No manually generated registration token that expires after 1 hour — re-applies always work.
+- No PAT to copy from the GitHub UI — `gh auth login` once, done.
+- By default runners register as **ephemeral**: each job gets a clean environment, and GitHub automatically removes the runner record after the job finishes, so redeploys don't orphan offline runner entries.
+
+`start.sh` unsets the credential from the environment before starting the runner listener, so workflow jobs cannot read it. This matters because the listener passes its environment down to every job step — a step running `env` would otherwise print an org-scoped credential into the job log.
+
+Runners come in two tiers, each independently scalable with its own labels and resource limits:
+
+| Tier  | Default labels               | Default count | Default limits |
+|-------|------------------------------|---------------|----------------|
+| heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 8 GB   |
+| light | `docker,ubuntu-22.04,light`  | 4             | 1 CPU, 2 GB    |
+
 ## Prerequisites
 - You must be an organization owner or have appropriate permissions to manage runners at the organization level.
-- You need a server/VM running Ubuntu (24.04 LTS recommended). Docker is installed automatically if missing.
-- You will generate a time-limited **runner registration token** from the GitHub UI (or via the REST API) for authentication. **Note: registration tokens expire after 1 hour** — generate it right before running `terraform apply`.
+- You need a server/VM running Ubuntu (24.04 LTS recommended). Docker, `python3`, and `curl` are installed automatically if missing.
+- You need the **gh CLI** installed and authenticated on the machine running Terraform (or, alternatively, a fine-grained PAT passed via `github_runner_pat`).
 
 ## Step-by-Step Guide
-### 1. Add the Runner to Your GitHub Organization
-1. Navigate to your organization’s settings on GitHub.
-2. In the left sidebar, click **Actions**, then click **Runners**.
-3. Click **New self-hosted runner**.
-4. Select the operating system (Linux) and architecture (x64).
-5. Copy the time-limited **runner registration token** shown in the configuration command; you will use it in Terraform.
+### 1. Authenticate the gh CLI
+```bash
+gh auth login
+```
 
-> **Important:** A single runner instance can only be registered to one scope (repository, organization, or enterprise) at a time. To share a runner across multiple repositories, register it at the organization level.
+Org-level runner registration needs the `admin:org` scope, which `gh auth login` does not grant by default. Add it once:
+
+```bash
+gh auth refresh -h github.com -s admin:org
+```
+
+(For a repo-scoped runner the default `repo` scope is sufficient.) Terraform verifies the credential can mint runner registration tokens before deploying and fails fast with a scope hint if it can't.
+
+If you prefer not to use gh (e.g. in CI), create a fine-grained PAT with the org permission **Self-hosted runners: Read and write** (repo-scoped: **Administration: Read and write**) and pass it as `github_runner_pat`.
+
+> **Important:** A single runner instance can only be registered to one scope (repository, organization, or enterprise) at a time. To share a runner across multiple repositories, register it at the organization level. `github_runner_org_url` accepts either an org URL (`https://github.com/your-org`) or a repo URL (`https://github.com/your-org/your-repo`); the containers pick the matching token API endpoint automatically.
 
 ### 2. Deploy with Terraform
-Terraform bootstraps the host (Docker, zRAM, swap), copies the Dockerfile and start script to your server, builds the image, and starts the runner containers.
+Terraform bootstraps the host (Docker, zRAM, swap), copies the Dockerfile and start script to your server, builds the image, and starts the runner containers. After `docker compose up`, the apply waits until all expected runners report **online** in GitHub (configurable via `github_runner_registration_timeout`) and fails otherwise.
 
 ```bash
 cd infra
@@ -48,10 +70,11 @@ terraform apply \
   -var="enable_portainer=true" \
   -var="enable_github_runners=true" \
   -var="github_runner_org_url=https://github.com/your-org" \
-  -var="github_runner_token=YOUR_REGISTRATION_TOKEN" \
   -var="github_runner_heavy_count=2" \
   -var="github_runner_light_count=4"
 ```
+
+No token variable needed — the credential is pulled from `gh auth token` automatically.
 
 **Notes:**
 - Replace `192.168.1.100` with your actual server IP and `youruser` with your SSH user. A non-default SSH port works too: `ssh://youruser@host:2222`. If you omit the user from the URL, pass it with `-var="ssh_user=youruser"`.
@@ -59,8 +82,8 @@ terraform apply \
 - Set `docker_host=unix:///var/run/docker.sock` to deploy to the local machine instead of over SSH.
 
 ### 3. Verify and Use
-- Verify the runners are online: **Organization Settings → Actions → Runners**. You should see the heavy and light runners listed with a green status icon (Idle).
-- Use the runners in workflows by matching their labels:
+- Verify the runners are online: **Organization Settings → Actions → Runners**. Your new runners should be listed and show a green status icon (Idle). Ephemeral runners disappear from the list after finishing a job and re-register automatically when their container restarts.
+- Use the runners in workflows by matching their tier labels:
 
 ```yaml
 jobs:
@@ -70,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-  test:
+  lint:
     # Lighter CI jobs
     runs-on: [self-hosted, docker, light]
     steps:
@@ -105,17 +128,13 @@ ssh youruser@<server-ip> "sudo docker compose -f /opt/github-runner/docker-compo
 ```
 
 ## Deploy Behavior Notes
-- **Registration health gate:** after `docker compose up`, the deploy waits (up to 5 minutes) for runners to log `Listening for Jobs`. If *any* runner fails to register, `terraform apply` fails loudly rather than reporting success over a partially dead fleet. The usual cause is an expired registration token.
+- **Registration health gate:** after `docker compose up`, the deploy polls the GitHub API until every expected runner reports `online`, and fails the apply on timeout. `docker compose up -d` exits 0 even when every container is crash-looping, so without this an apply could report success over a dead fleet.
 - **Docker-capable runners:** the runner image ships the `docker` CLI, buildx, and compose plugins, and the deploy injects the host's `docker` group gid (`DOCKER_GID` in `.env`, used by `group_add`) so jobs can use the mounted Docker socket. Note that this grants jobs root-equivalent control of the host daemon — only run trusted workflows on these runners.
-- **Token is kept out of jobs:** the registration token is passed as `RUNNER_REGISTRATION_TOKEN` (deliberately *not* `GITHUB_TOKEN`, which would collide with the per-job token GitHub injects), and `start.sh` unsets it from the environment before starting the listener, so workflow steps cannot read it. It is written only to `/opt/github-runner/.env`, mode 600, which is never committed.
-- **Graceful shutdown:** `stop_grace_period: 120s` plus signal forwarding in `start.sh` lets in-flight jobs wind down and the runner attempt deregistration on `docker compose down`.
+- **Credential is kept out of jobs:** see [How Registration Works](#how-registration-works). It is written only to `/opt/github-runner/.env`, mode 600, which is never committed.
+- **Graceful shutdown:** `stop_grace_period: 120s` plus signal forwarding in `start.sh` lets in-flight jobs wind down and the runner deregister itself on `docker compose down`. `docker stop` signals PID 1 only, and bash defers traps while a foreground command runs, so the listener must be backgrounded for this to work at all.
 - **Replica counts are durable:** counts are written to `.env` and consumed by `deploy.replicas` in the compose file, so running a bare `docker compose up -d` on the host (or acting through Portainer) does not collapse each tier to a single runner.
-- **`terraform destroy` stops the stacks:** a destroy-time provisioner brings both compose stacks down and removes the `.env` holding the token. Host tuning (swapfile, zram, sysctl, `daemon.json`) is intentionally left in place.
-
-## Known Limitation: Runner Deregistration
-`config.sh remove` requires a token from GitHub's separate *remove-token* endpoint, but this project only has the ~1-hour registration token, which has usually expired by the time containers stop. Deregistration is therefore **best-effort and normally fails**, leaving offline runner entries that GitHub garbage-collects after about 14 days. Because runner names derive from container hostnames (new on every recreate), `--replace` does not reclaim the old entries either.
-
-The durable fix is to supply a fine-grained PAT or GitHub App credential (org permission: *self-hosted runners* read/write) and have each container mint its own registration and remove tokens at start/stop, ideally combined with `--ephemeral` runners so GitHub removes each record after a job.
+- **`terraform destroy` stops the stacks:** a destroy-time provisioner brings both compose stacks down — letting the containers deregister themselves — and removes the `.env` holding the credential. Host tuning (swapfile, zram, sysctl, `daemon.json`) is intentionally left in place.
+- **Idempotent re-applies:** `daemon.json` and the zram config are only rewritten when their content changes, so a re-apply does not bounce dockerd and kill in-flight jobs.
 
 ## Host Memory Tuning
 The bootstrap step configures:

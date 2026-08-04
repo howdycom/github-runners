@@ -24,7 +24,7 @@ locals {
   ssh_host     = local.ssh_has_port ? split(":", local.ssh_hostport)[0] : local.ssh_hostport
   ssh_port     = local.ssh_has_port ? split(":", local.ssh_hostport)[1] : "22"
 
-  # A user in docker_host wins over var.ssh_user.
+  # A user embedded in docker_host wins over var.ssh_user.
   ssh_user = local.ssh_userinfo != "" ? local.ssh_userinfo : var.ssh_user
 
   ssh_opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -44,7 +44,7 @@ resource "null_resource" "bootstrap_docker" {
     command     = <<EOT
       set -e
 
-      HOST_PREP_SCRIPT=$(cat <<'REMOTE_SCRIPT'
+      HOST_PREP=$(cat <<'REMOTE_SCRIPT'
         set -e
 
         # --- Docker: install if missing, always start on boot ---
@@ -61,6 +61,12 @@ resource "null_resource" "bootstrap_docker" {
           sudo usermod -aG docker "$(id -un)" || true
         fi
         sudo systemctl enable --now docker
+
+        # python3 and curl back the post-deploy registration health gate.
+        command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 || {
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 curl < /dev/null
+        }
 
         # --- zRAM: compressed swap in RAM, used first (highest priority) ---
         sudo apt-get update
@@ -91,7 +97,8 @@ resource "null_resource" "bootstrap_docker" {
         echo 'vm.swappiness=100' | sudo tee /etc/sysctl.d/99-github-runners.conf > /dev/null
         sudo sysctl -q -p /etc/sysctl.d/99-github-runners.conf
 
-        # --- Docker daemon config: rewrite + restart only when changed ---
+        # --- Docker daemon config: rewrite + restart only when changed, so a
+        # re-apply does not bounce dockerd and kill in-flight jobs ---
         DAEMON_JSON='{"default-address-pools":[{"base":"10.0.0.0/8","size":24}]}'
         if [ ! -f /etc/docker/daemon.json ] || [ "$(sudo cat /etc/docker/daemon.json)" != "$DAEMON_JSON" ]; then
           echo "$DAEMON_JSON" | sudo tee /etc/docker/daemon.json > /dev/null
@@ -103,15 +110,15 @@ resource "null_resource" "bootstrap_docker" {
 REMOTE_SCRIPT
       )
 
-      # Host tuning values are passed as environment variables rather than
-      # interpolated into the script body, so the remote script stays literal.
-      ENV_PREFIX="ZRAM_SIZE_MIB=${var.zram_size_mib} SWAP_SIZE_GIB=${var.swap_size_gib}"
+      # Sizes are passed as environment variables so the remote script body
+      # stays literal.
+      PREFIX="export ZRAM_SIZE_MIB=${var.zram_size_mib} SWAP_SIZE_GIB=${var.swap_size_gib}"
 
       if [ "${local.is_ssh}" = "true" ]; then
-        printf 'export %s\n%s\n' "$ENV_PREFIX" "$HOST_PREP_SCRIPT" \
+        printf '%s\n%s\n' "$PREFIX" "$HOST_PREP" \
           | ssh ${local.ssh_opts} -p ${local.ssh_port} "${local.ssh_user}@${local.ssh_host}" 'bash -s'
       else
-        printf 'export %s\n%s\n' "$ENV_PREFIX" "$HOST_PREP_SCRIPT" | bash -s
+        printf '%s\n%s\n' "$PREFIX" "$HOST_PREP" | bash -s
       fi
     EOT
   }
@@ -136,9 +143,14 @@ resource "null_resource" "deploy_stacks" {
     github_runner_heavy_count  = var.github_runner_heavy_count
     github_runner_light_count  = var.github_runner_light_count
     github_runner_org_url      = var.github_runner_org_url
-    github_runner_token        = var.github_runner_token
+    github_runner_pat_hash     = sha256(var.github_runner_pat)
+    github_runner_ephemeral    = var.github_runner_ephemeral
     github_runner_heavy_labels = var.github_runner_heavy_labels
     github_runner_light_labels = var.github_runner_light_labels
+    github_runner_heavy_cpus   = var.github_runner_heavy_cpus
+    github_runner_heavy_memory = var.github_runner_heavy_memory
+    github_runner_light_cpus   = var.github_runner_light_cpus
+    github_runner_light_memory = var.github_runner_light_memory
     github_runner_name_prefix  = var.github_runner_name_prefix
     github_runner_version      = var.github_runner_version
 
@@ -154,7 +166,64 @@ resource "null_resource" "deploy_stacks" {
     command     = <<EOT
       set -e
 
-      DEPLOY_SCRIPT=$(cat <<'REMOTE_SCRIPT'
+      # Resolve the GitHub credential on the machine running terraform.
+      # Preference: explicit github_runner_pat var, otherwise the gh CLI's
+      # stored token (no copy/paste needed).
+      EFFECTIVE_PAT=""
+      if [ "${var.enable_github_runners}" = "true" ]; then
+        EFFECTIVE_PAT="${var.github_runner_pat}"
+        if [ -z "$EFFECTIVE_PAT" ] && command -v gh >/dev/null 2>&1; then
+          echo "github_runner_pat not set; using the gh CLI credential."
+          EFFECTIVE_PAT="$(gh auth token 2>/dev/null || true)"
+        fi
+        if [ -z "$EFFECTIVE_PAT" ]; then
+          echo "ERROR: no GitHub credential available. Authenticate the gh CLI (gh auth login) or set -var github_runner_pat=..." >&2
+          exit 1
+        fi
+
+        ORG_URL="${var.github_runner_org_url}"
+        TARGET="$${ORG_URL#*://*/}"
+        TARGET="$${TARGET%/}"
+        if [[ "$TARGET" == */* ]]; then
+          TOKEN_API="https://api.github.com/repos/$TARGET/actions/runners/registration-token"
+          SCOPE_HINT="the 'repo' scope (classic / gh CLI token) or repository 'Administration: Read and write' (fine-grained PAT)"
+        else
+          TOKEN_API="https://api.github.com/orgs/$TARGET/actions/runners/registration-token"
+          SCOPE_HINT="the 'admin:org' scope (grant it with: gh auth refresh -h github.com -s admin:org) or org 'Self-hosted runners: Read and write' (fine-grained PAT)"
+        fi
+
+        echo "Verifying the credential can mint runner registration tokens for $TARGET..."
+        if ! curl -sf -X POST \
+          -H "Authorization: Bearer $EFFECTIVE_PAT" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "$TOKEN_API" > /dev/null; then
+          echo "ERROR: the credential cannot mint runner registration tokens for $TARGET. It needs $SCOPE_HINT." >&2
+          exit 1
+        fi
+      fi
+
+      # The credential travels in this file only — never interpolated into the
+      # script text, and mode 600 on the host.
+      ENV_TMP="$(mktemp)"
+      chmod 600 "$ENV_TMP"
+      cat > "$ENV_TMP" <<ENV_FILE
+GITHUB_ORG_URL=${var.github_runner_org_url}
+GITHUB_PAT=$EFFECTIVE_PAT
+RUNNER_LABELS_HEAVY=${var.github_runner_heavy_labels}
+RUNNER_LABELS_LIGHT=${var.github_runner_light_labels}
+RUNNER_NAME_PREFIX=${var.github_runner_name_prefix}
+RUNNER_VERSION=${var.github_runner_version}
+RUNNER_EPHEMERAL=${var.github_runner_ephemeral}
+HEAVY_CPUS=${var.github_runner_heavy_cpus}
+HEAVY_MEMORY=${var.github_runner_heavy_memory}
+LIGHT_CPUS=${var.github_runner_light_cpus}
+LIGHT_MEMORY=${var.github_runner_light_memory}
+HEAVY_REPLICAS=${var.github_runner_heavy_count}
+LIGHT_REPLICAS=${var.github_runner_light_count}
+ENV_FILE
+
+      DEPLOY=$(cat <<'REMOTE_SCRIPT'
         set -e
 
         sudo mkdir -p /opt/portainer /opt/github-runner
@@ -165,21 +234,12 @@ resource "null_resource" "deploy_stacks" {
         sudo mv /tmp/github-runner.Dockerfile /opt/github-runner/Dockerfile
         sudo mv /tmp/github-runner.start.sh /opt/github-runner/start.sh
         sudo chmod +x /opt/github-runner/start.sh
+        sudo mv /tmp/github-runner.env /opt/github-runner/.env
+        sudo chmod 600 /opt/github-runner/.env
 
-        # The registration token lands only in this file, which is never
-        # committed and is readable by root only.
-        sudo install -m 600 /dev/null /opt/github-runner/.env
-        sudo tee /opt/github-runner/.env > /dev/null <<ENV_FILE
-GITHUB_ORG_URL=$GITHUB_ORG_URL
-RUNNER_REGISTRATION_TOKEN=$RUNNER_REGISTRATION_TOKEN
-RUNNER_HEAVY_LABELS=$RUNNER_HEAVY_LABELS
-RUNNER_LIGHT_LABELS=$RUNNER_LIGHT_LABELS
-RUNNER_HEAVY_REPLICAS=$RUNNER_HEAVY_REPLICAS
-RUNNER_LIGHT_REPLICAS=$RUNNER_LIGHT_REPLICAS
-RUNNER_NAME_PREFIX=$RUNNER_NAME_PREFIX
-RUNNER_VERSION=$RUNNER_VERSION
-DOCKER_GID=$(getent group docker | cut -d: -f3)
-ENV_FILE
+        # The host's docker gid must be resolved here, not on the machine
+        # running terraform, so the runner user can use the mounted socket.
+        echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" | sudo tee -a /opt/github-runner/.env > /dev/null
 
         echo "Configuring Firewall..."
         sudo ufw allow 22/tcp
@@ -201,30 +261,39 @@ ENV_FILE
           # from .env), so a later bare `docker compose up -d` keeps them.
           sudo docker compose up -d --build
 
-          echo "Waiting for runners to register with GitHub..."
-          TOTAL=$(sudo docker compose ps -q | wc -l | tr -d ' ')
-          DEADLINE=$(( $(date +%s) + 300 ))
-          REGISTERED=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            REGISTERED=0
-            for c in $(sudo docker compose ps -q); do
-              if sudo docker logs "$c" 2>&1 | grep -q "Listening for Jobs"; then
-                REGISTERED=$((REGISTERED + 1))
-              fi
-            done
-            if [ "$REGISTERED" -ge "$TOTAL" ]; then
-              break
+          EXPECTED=$(( HEAVY_COUNT + LIGHT_COUNT ))
+          if [ "$EXPECTED" -gt 0 ]; then
+            if ! command -v python3 >/dev/null; then
+              echo "python3 is required on the host for the runner registration health gate."
+              exit 1
             fi
-            sleep 10
-          done
-          echo "$REGISTERED/$TOTAL runners registered."
-          # Fail on ANY runner that did not come up, not just on a total wipeout.
-          if [ "$REGISTERED" -lt "$TOTAL" ]; then
-            echo "ERROR: only $REGISTERED of $TOTAL runners registered with GitHub."
-            echo "A common cause is an expired registration token (1-hour TTL); generate a fresh one and re-run."
-            echo "Recent logs:"
-            sudo docker compose logs --tail 20
-            exit 1
+
+            GITHUB_PAT_VALUE="$(sudo grep '^GITHUB_PAT=' /opt/github-runner/.env | cut -d= -f2-)"
+            TARGET_PATH="$${GITHUB_ORG_URL_RAW#*://*/}"
+            TARGET_PATH="$${TARGET_PATH%/}"
+            if [[ "$TARGET_PATH" == */* ]]; then
+              RUNNERS_API="https://api.github.com/repos/$TARGET_PATH/actions/runners"
+            else
+              RUNNERS_API="https://api.github.com/orgs/$TARGET_PATH/actions/runners"
+            fi
+
+            echo "Waiting for $EXPECTED runner(s) to come online..."
+            DEADLINE=$((SECONDS + REGISTRATION_TIMEOUT))
+            while true; do
+              ONLINE=$(curl -sf -H "Authorization: Bearer $GITHUB_PAT_VALUE" -H "Accept: application/vnd.github+json" "$RUNNERS_API?per_page=100" \
+                | NAME_PREFIX="$NAME_PREFIX" python3 -c 'import json,os,sys; d=json.load(sys.stdin); p=os.environ["NAME_PREFIX"]; print(sum(1 for r in d.get("runners",[]) if r["status"] == "online" and r["name"].startswith(p)))' \
+                || echo 0)
+              if [ "$ONLINE" -ge "$EXPECTED" ]; then
+                echo "$ONLINE/$EXPECTED runner(s) online."
+                break
+              fi
+              if [ "$SECONDS" -ge "$DEADLINE" ]; then
+                echo "Timed out waiting for runner registration ($ONLINE/$EXPECTED online)."
+                sudo docker compose logs --tail 50
+                exit 1
+              fi
+              sleep 5
+            done
           fi
         else
           echo "Skipping GitHub Runners"
@@ -232,37 +301,31 @@ ENV_FILE
 REMOTE_SCRIPT
       )
 
-      # Values reach the remote shell as environment variables so that secrets
-      # are never interpolated into the script text.
-      export GITHUB_ORG_URL='${var.github_runner_org_url}'
-      export RUNNER_REGISTRATION_TOKEN='${var.github_runner_token}'
-      export RUNNER_HEAVY_LABELS='${var.github_runner_heavy_labels}'
-      export RUNNER_LIGHT_LABELS='${var.github_runner_light_labels}'
-      export RUNNER_HEAVY_REPLICAS='${var.github_runner_heavy_count}'
-      export RUNNER_LIGHT_REPLICAS='${var.github_runner_light_count}'
-      export RUNNER_NAME_PREFIX='${var.github_runner_name_prefix}'
-      export RUNNER_VERSION='${var.github_runner_version}'
-      export ENABLE_PORTAINER='${var.enable_portainer}'
-      export ENABLE_GITHUB_RUNNERS='${var.enable_github_runners}'
-
-      VARS="GITHUB_ORG_URL RUNNER_REGISTRATION_TOKEN RUNNER_HEAVY_LABELS RUNNER_LIGHT_LABELS RUNNER_HEAVY_REPLICAS RUNNER_LIGHT_REPLICAS RUNNER_NAME_PREFIX RUNNER_VERSION ENABLE_PORTAINER ENABLE_GITHUB_RUNNERS"
+      # Non-secret settings the remote script needs, passed as env rather than
+      # interpolated into its body.
+      PREFIX=$(printf 'export ENABLE_PORTAINER=%q ENABLE_GITHUB_RUNNERS=%q HEAVY_COUNT=%q LIGHT_COUNT=%q REGISTRATION_TIMEOUT=%q NAME_PREFIX=%q GITHUB_ORG_URL_RAW=%q' \
+        '${var.enable_portainer}' '${var.enable_github_runners}' '${var.github_runner_heavy_count}' '${var.github_runner_light_count}' \
+        '${var.github_runner_registration_timeout}' '${var.github_runner_name_prefix}' '${var.github_runner_org_url}')
 
       if [ "${local.is_ssh}" = "true" ]; then
-        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/portainer/docker-compose.yml" "${local.ssh_user}@${local.ssh_host}:/tmp/portainer.docker-compose.yml"
-        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/docker-compose.yml" "${local.ssh_user}@${local.ssh_host}:/tmp/github-runner.docker-compose.yml"
-        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/Dockerfile" "${local.ssh_user}@${local.ssh_host}:/tmp/github-runner.Dockerfile"
-        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/start.sh" "${local.ssh_user}@${local.ssh_host}:/tmp/github-runner.start.sh"
+        SSH_DEST="${local.ssh_user}@${local.ssh_host}"
+        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/portainer/docker-compose.yml" "$SSH_DEST:/tmp/portainer.docker-compose.yml"
+        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/docker-compose.yml" "$SSH_DEST:/tmp/github-runner.docker-compose.yml"
+        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/Dockerfile" "$SSH_DEST:/tmp/github-runner.Dockerfile"
+        scp ${local.ssh_opts} -P ${local.ssh_port} "${path.module}/stacks/github-runner/start.sh" "$SSH_DEST:/tmp/github-runner.start.sh"
+        scp ${local.ssh_opts} -P ${local.ssh_port} "$ENV_TMP" "$SSH_DEST:/tmp/github-runner.env"
+        rm -f "$ENV_TMP"
 
-        # shellcheck disable=SC2086
-        { for v in $VARS; do printf '%s=%q\n' "$v" "$${!v}"; done; printf 'export %s\n' "$VARS"; printf '%s\n' "$DEPLOY_SCRIPT"; } \
-          | ssh ${local.ssh_opts} -p ${local.ssh_port} "${local.ssh_user}@${local.ssh_host}" 'bash -s'
+        printf '%s\n%s\n' "$PREFIX" "$DEPLOY" \
+          | ssh ${local.ssh_opts} -p ${local.ssh_port} "$SSH_DEST" 'bash -s'
       else
         cp "${path.module}/stacks/portainer/docker-compose.yml" /tmp/portainer.docker-compose.yml
         cp "${path.module}/stacks/github-runner/docker-compose.yml" /tmp/github-runner.docker-compose.yml
         cp "${path.module}/stacks/github-runner/Dockerfile" /tmp/github-runner.Dockerfile
         cp "${path.module}/stacks/github-runner/start.sh" /tmp/github-runner.start.sh
+        mv "$ENV_TMP" /tmp/github-runner.env
 
-        printf '%s\n' "$DEPLOY_SCRIPT" | bash -s
+        printf '%s\n%s\n' "$PREFIX" "$DEPLOY" | bash -s
       fi
     EOT
   }
@@ -277,8 +340,10 @@ REMOTE_SCRIPT
     command     = <<EOT
       set -e
 
-      TEARDOWN_SCRIPT=$(cat <<'REMOTE_SCRIPT'
+      TEARDOWN=$(cat <<'REMOTE_SCRIPT'
         set -e
+        # Containers deregister themselves on stop (start.sh mints a remove
+        # token), so bring them down before deleting the credential.
         if [ -f /opt/github-runner/docker-compose.yml ]; then
           cd /opt/github-runner
           sudo docker compose down --remove-orphans || true
@@ -287,17 +352,16 @@ REMOTE_SCRIPT
           cd /opt/portainer
           sudo docker compose down --remove-orphans || true
         fi
-        # Remove the file holding the registration token.
         sudo rm -f /opt/github-runner/.env
-        echo "Stacks stopped. Host tuning (swapfile, zram, sysctl, daemon.json) left in place deliberately."
-        echo "Runners may remain listed as offline in GitHub until garbage-collected (~14 days)."
+        echo "Stacks stopped and credential removed."
+        echo "Host tuning (swapfile, zram, sysctl, daemon.json) left in place deliberately."
 REMOTE_SCRIPT
       )
 
       if [ "${self.triggers.is_ssh}" = "true" ]; then
-        printf '%s\n' "$TEARDOWN_SCRIPT" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${self.triggers.ssh_port} "${self.triggers.ssh_user}@${self.triggers.ssh_host}" 'bash -s'
+        printf '%s\n' "$TEARDOWN" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${self.triggers.ssh_port} "${self.triggers.ssh_user}@${self.triggers.ssh_host}" 'bash -s'
       else
-        printf '%s\n' "$TEARDOWN_SCRIPT" | bash -s
+        printf '%s\n' "$TEARDOWN" | bash -s
       fi
     EOT
   }

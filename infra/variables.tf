@@ -28,35 +28,65 @@ variable "github_runner_org_url" {
   default     = ""
 }
 
-variable "github_runner_token" {
-  description = "GitHub Actions runner registration token"
+variable "github_runner_pat" {
+  description = "Optional GitHub credential with self-hosted runner RW permission on the org (or repo). Leave empty to use the local gh CLI's token (gh auth token) automatically — no copy/paste needed. Containers use it to mint short-lived registration/remove tokens at start/stop time."
   type        = string
   default     = ""
   sensitive   = true
 }
 
+variable "github_runner_ephemeral" {
+  description = "Register runners with --ephemeral so each job gets a clean environment and GitHub auto-removes the runner record after a job"
+  type        = bool
+  default     = true
+}
+
 variable "github_runner_heavy_count" {
-  description = "Number of heavy (Docker/build workload) runner containers to deploy"
+  description = "Number of heavy-tier (Docker/build workload) runner containers to deploy"
   type        = number
   default     = 2
 }
 
 variable "github_runner_light_count" {
-  description = "Number of light (CI job) runner containers to deploy"
+  description = "Number of light-tier (lighter CI job) runner containers to deploy"
   type        = number
   default     = 4
 }
 
 variable "github_runner_heavy_labels" {
-  description = "Comma-separated labels for heavy runners"
+  description = "Comma-separated labels for heavy-tier runners"
   type        = string
   default     = "docker,ubuntu-22.04,heavy"
 }
 
 variable "github_runner_light_labels" {
-  description = "Comma-separated labels for light runners"
+  description = "Comma-separated labels for light-tier runners"
   type        = string
   default     = "docker,ubuntu-22.04,light"
+}
+
+variable "github_runner_heavy_cpus" {
+  description = "CPU limit per heavy-tier runner container"
+  type        = string
+  default     = "4"
+}
+
+variable "github_runner_heavy_memory" {
+  description = "Memory limit per heavy-tier runner container"
+  type        = string
+  default     = "8g"
+}
+
+variable "github_runner_light_cpus" {
+  description = "CPU limit per light-tier runner container"
+  type        = string
+  default     = "1"
+}
+
+variable "github_runner_light_memory" {
+  description = "Memory limit per light-tier runner container"
+  type        = string
+  default     = "2g"
 }
 
 variable "github_runner_name_prefix" {
@@ -69,6 +99,12 @@ variable "github_runner_version" {
   description = "GitHub Actions runner version to install"
   type        = string
   default     = "2.323.0"
+}
+
+variable "github_runner_registration_timeout" {
+  description = "Seconds to wait for all runners to show up online in GitHub before failing the apply"
+  type        = number
+  default     = 300
 }
 
 variable "zram_size_mib" {
