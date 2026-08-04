@@ -33,12 +33,20 @@ Runners come in two tiers, each independently scalable with its own labels and r
 
 | Tier  | Default labels               | Default count | Default limits |
 |-------|------------------------------|---------------|----------------|
-| heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 16 GB  |
-| light | `docker,ubuntu-22.04,light`  | 8             | 1 CPU, 2 GB    |
+| heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 8 GB   |
+| light | `docker,ubuntu-22.04,light`  | 8             | 2 CPUs, 4 GB   |
 
-The heavy tier defaults match a GitHub-hosted `ubuntu-latest` standard runner (4 vCPUs, 16 GB) so jobs sized for hosted runners behave the same way here.
+The heavy tier matches a GitHub-hosted `ubuntu-latest` standard runner on CPU (4 vCPUs). Its memory is capped at 8 GB rather than the hosted 16 GB deliberately: **a `mem_limit` above physical RAM is never actually enforced**, so on a 16 GB host 16 GB would be a decorative number that lets one job exhaust the machine.
 
-> **`cpus` and `mem_limit` are ceilings, not reservations.** The defaults above sum to well more than a single 16 GB box provides, which is intentional — it lets any one job burst to a full hosted-runner allocation instead of capping every job at `RAM ÷ runners`. The tradeoff is that several large jobs running at once will contend and push into zRAM/swap rather than being individually throttled. Lower `github_runner_heavy_memory` if you would rather have hard per-job protection than hosted-runner parity.
+The light tier gets 2 CPUs because 1 was measurably too few. Under a real node build, cgroup counters showed a light runner throttled 362 times for 26.8 s against 78.5 s of CPU actually consumed — roughly a quarter of its CPU demand denied by the quota, on a host that was 96% idle. Memory went to 4 GB because the same job peaked at 1.35 GB, uncomfortably close to a 2 GB cap where Docker OOM-kills the job rather than slowing it.
+
+Check for the same symptom on your own workloads before changing these:
+
+```bash
+for c in $(sudo docker ps -q --filter name=github-runner); do id=$(sudo docker inspect --format '{{.Id}}' "$c"); sudo cat "/sys/fs/cgroup/system.slice/docker-$id.scope/cpu.stat" | grep -E 'nr_throttled|throttled_usec'; done
+```
+
+> **`cpus` and `mem_limit` are ceilings, not reservations.** The defaults above deliberately oversubscribe a 16 GB / 16-thread box, so any single job can burst well beyond `RAM ÷ runners` while the fleet is mostly idle — which is the common case. The tradeoff is that many simultaneous jobs contend and push into zRAM/swap instead of each being throttled to a guaranteed slice.
 
 ## Prerequisites
 - You must be an organization owner or have appropriate permissions to manage runners at the organization level.

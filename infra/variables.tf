@@ -72,21 +72,21 @@ variable "github_runner_heavy_cpus" {
 }
 
 variable "github_runner_heavy_memory" {
-  description = "Memory limit per heavy-tier runner container. Defaults to 16g to match a GitHub-hosted ubuntu-latest standard runner; note this is a ceiling, not a reservation, and exceeds physical RAM on a 16 GB host."
+  description = "Memory limit per heavy-tier runner container. 8g keeps this an enforceable cap on a 16 GB host; a hosted ubuntu-latest runner nominally gets 16 GB, but a limit above physical RAM is never actually applied."
   type        = string
-  default     = "16g"
+  default     = "8g"
 }
 
 variable "github_runner_light_cpus" {
   description = "CPU limit per light-tier runner container"
   type        = string
-  default     = "1"
+  default     = "2"
 }
 
 variable "github_runner_light_memory" {
   description = "Memory limit per light-tier runner container"
   type        = string
-  default     = "2g"
+  default     = "4g"
 }
 
 variable "github_runner_name_prefix" {

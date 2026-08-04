@@ -9,7 +9,7 @@ services:
     # Give in-flight jobs and the deregistration cleanup time to finish on stop.
     stop_grace_period: 120s
     cpus: ${HEAVY_CPUS:-4}
-    mem_limit: ${HEAVY_MEMORY:-16g}
+    mem_limit: ${HEAVY_MEMORY:-8g}
     # Replica counts live here (fed from .env) rather than only in the deploy's
     # --scale flags, so a later bare `docker compose up -d` on the host does not
     # silently collapse each tier to a single runner.
@@ -40,8 +40,8 @@ services:
         RUNNER_VERSION: ${RUNNER_VERSION:-2.336.0}
     restart: unless-stopped
     stop_grace_period: 120s
-    cpus: ${LIGHT_CPUS:-1}
-    mem_limit: ${LIGHT_MEMORY:-2g}
+    cpus: ${LIGHT_CPUS:-2}
+    mem_limit: ${LIGHT_MEMORY:-4g}
     deploy:
       replicas: ${LIGHT_REPLICAS:-8}
     environment:
