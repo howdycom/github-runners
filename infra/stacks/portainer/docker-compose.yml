@@ -1,8 +1,9 @@
-version: '3.8'
-
 services:
   portainer:
-    image: portainer/portainer-ce:latest
+    # Pinned deliberately: `latest` silently changes first-run behavior between
+    # versions (2.39 added a required X-Setup-Token for admin initialization),
+    # which turns an unattended redeploy into a surprise manual step.
+    image: portainer/portainer-ce:2.39.5
     container_name: portainer
     restart: unless-stopped
     ports:

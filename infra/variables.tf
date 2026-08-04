@@ -5,9 +5,9 @@ variable "docker_host" {
 }
 
 variable "ssh_user" {
-  description = "SSH user for remote Docker host"
+  description = "SSH user for a remote Docker host. Ignored when docker_host already embeds a user (ssh://user@host)."
   type        = string
-  default     = "michael"
+  default     = ""
 }
 
 variable "enable_portainer" {
@@ -42,15 +42,15 @@ variable "github_runner_ephemeral" {
 }
 
 variable "github_runner_heavy_count" {
-  description = "Number of heavy-tier runner containers to deploy"
+  description = "Number of heavy-tier (Docker/build workload) runner containers to deploy"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "github_runner_light_count" {
-  description = "Number of light-tier runner containers to deploy"
+  description = "Number of light-tier (lighter CI job) runner containers to deploy"
   type        = number
-  default     = 1
+  default     = 4
 }
 
 variable "github_runner_heavy_labels" {
@@ -105,4 +105,16 @@ variable "github_runner_registration_timeout" {
   description = "Seconds to wait for all runners to show up online in GitHub before failing the apply"
   type        = number
   default     = 300
+}
+
+variable "zram_size_mib" {
+  description = "Size of the zRAM compressed swap device in MiB"
+  type        = number
+  default     = 8192
+}
+
+variable "swap_size_gib" {
+  description = "Size of the on-disk swap file in GiB"
+  type        = number
+  default     = 16
 }

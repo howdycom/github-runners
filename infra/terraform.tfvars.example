@@ -3,41 +3,36 @@
 
 # Docker daemon connection
 # docker_host = "unix:///var/run/docker.sock"
-# docker_host = "ssh://michael@192.168.1.100"
+# docker_host = "ssh://youruser@192.168.1.100"
+# docker_host = "ssh://youruser@192.168.1.100:2222"   # non-default SSH port
 
-# SSH user for remote hosts
-# ssh_user = "michael"
+# SSH user for remote hosts. Only needed when docker_host omits the user.
+# ssh_user = "youruser"
 
 # Enable/disable stacks
-enable_portainer = true
+enable_portainer      = true
 enable_github_runners = true
 
 # GitHub Actions runner settings
 # github_runner_org_url = "https://github.com/your-org"
-
-# GitHub credential used to mint short-lived runner registration/remove tokens.
-# Leave UNSET to use the gh CLI's stored token automatically (gh auth token) —
-# no copy/paste needed. For org runners the gh token needs the admin:org scope:
-#   gh auth refresh -h github.com -s admin:org
-# Alternatively, set a fine-grained PAT with org "Self-hosted runners: RW".
-# github_runner_pat = "github_pat_XXXXXXXX"
-
-# Ephemeral runners: clean environment per job, GitHub auto-removes the
-# runner record after each job (no orphaned offline runners on redeploys).
-# github_runner_ephemeral = true
-
-# Two-tier runner fleet
-# github_runner_heavy_count  = 1
-# github_runner_light_count  = 2
+#
+# Credential used by containers to mint short-lived registration/remove tokens.
+# Leave unset to use the local gh CLI's token (gh auth token) automatically.
+# github_runner_pat = "github_pat_..."
+#
+# github_runner_ephemeral    = true
+# github_runner_heavy_count  = 2
+# github_runner_light_count  = 4
 # github_runner_heavy_labels = "docker,ubuntu-22.04,heavy"
 # github_runner_light_labels = "docker,ubuntu-22.04,light"
 # github_runner_heavy_cpus   = "4"
 # github_runner_heavy_memory = "8g"
 # github_runner_light_cpus   = "1"
 # github_runner_light_memory = "2g"
-
-# github_runner_name_prefix = "github-runner"
-# github_runner_version = "2.323.0"
-
-# Seconds to wait for runners to show up online in GitHub before failing apply
+# github_runner_name_prefix  = "github-runner"
+# github_runner_version      = "2.323.0"
 # github_runner_registration_timeout = 300
+
+# Host memory tuning (applied during bootstrap)
+# zram_size_mib = 8192
+# swap_size_gib = 16

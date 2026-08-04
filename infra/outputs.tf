@@ -1,10 +1,6 @@
-locals {
-  docker_host_address = var.docker_host != "unix:///var/run/docker.sock" ? replace(replace(var.docker_host, "ssh://", ""), "${var.ssh_user}@", "") : "localhost"
-}
-
 output "portainer_url" {
   description = "URL to access Portainer"
-  value       = var.enable_portainer ? "http://${local.docker_host_address}:9000" : "Portainer not enabled"
+  value       = var.enable_portainer ? "http://${local.is_ssh ? local.ssh_host : "localhost"}:9000" : "Portainer not enabled"
 }
 
 output "github_runner_stack" {
