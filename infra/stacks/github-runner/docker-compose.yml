@@ -1,15 +1,36 @@
-version: '3.8'
-
 services:
-  github-runner:
+  github-runner-heavy:
+    image: github-runner:local
     build:
       context: .
     restart: unless-stopped
+    cpus: ${HEAVY_CPUS:-4}
+    mem_limit: ${HEAVY_MEMORY:-8g}
     environment:
       GITHUB_ORG_URL: ${GITHUB_ORG_URL}
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      RUNNER_LABELS: ${RUNNER_LABELS:-docker,ubuntu-22.04}
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_LABELS: ${RUNNER_LABELS_HEAVY:-docker,ubuntu-22.04,heavy}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
+      RUNNER_TIER: heavy
       RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  github-runner-light:
+    image: github-runner:local
+    build:
+      context: .
+    restart: unless-stopped
+    cpus: ${LIGHT_CPUS:-1}
+    mem_limit: ${LIGHT_MEMORY:-2g}
+    environment:
+      GITHUB_ORG_URL: ${GITHUB_ORG_URL}
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_LABELS: ${RUNNER_LABELS_LIGHT:-docker,ubuntu-22.04,light}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
+      RUNNER_TIER: light
+      RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
