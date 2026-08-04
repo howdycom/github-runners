@@ -98,13 +98,13 @@ variable "github_runner_name_prefix" {
 variable "github_runner_version" {
   description = "GitHub Actions runner version to install"
   type        = string
-  default     = "2.323.0"
+  default     = "2.336.0"
 }
 
 variable "github_runner_registration_timeout" {
   description = "Seconds to wait for all runners to show up online in GitHub before failing the apply"
   type        = number
-  default     = 300
+  default     = 900
 }
 
 variable "zram_size_mib" {

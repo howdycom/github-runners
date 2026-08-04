@@ -50,27 +50,27 @@ resource "null_resource" "bootstrap_docker" {
         # --- Docker: install if missing, always start on boot ---
         if ! command -v docker >/dev/null 2>&1; then
           echo "Installing Docker..."
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg < /dev/null
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y ca-certificates curl gnupg < /dev/null
           sudo install -m 0755 -d /etc/apt/keyrings
           sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
           sudo chmod a+r /etc/apt/keyrings/docker.asc
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin < /dev/null
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin < /dev/null
           sudo usermod -aG docker "$(id -un)" || true
         fi
         sudo systemctl enable --now docker
 
         # python3 and curl back the post-deploy registration health gate.
         command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 || {
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 curl < /dev/null
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y python3 curl < /dev/null
         }
 
         # --- zRAM: compressed swap in RAM, used first (highest priority) ---
-        sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y zram-tools < /dev/null
+        sudo apt-get -o DPkg::Lock::Timeout=600 update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold install -y zram-tools < /dev/null
         printf 'ALGO=zstd\nSIZE=%s\nPRIORITY=100\n' "$ZRAM_SIZE_MIB" > /tmp/zramswap.conf
         if ! sudo cmp -s /tmp/zramswap.conf /etc/default/zramswap; then
           sudo cp /tmp/zramswap.conf /etc/default/zramswap
@@ -358,8 +358,19 @@ REMOTE_SCRIPT
 REMOTE_SCRIPT
       )
 
-      if [ "${self.triggers.is_ssh}" = "true" ]; then
-        printf '%s\n' "$TEARDOWN" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${self.triggers.ssh_port} "${self.triggers.ssh_user}@${self.triggers.ssh_host}" 'bash -s'
+      # Read triggers with lookup() defaults: a resource created before these
+      # keys existed is still in state without them, and Terraform evaluates
+      # destroy provisioners against that older state.
+      IS_SSH='${lookup(self.triggers, "is_ssh", "")}'
+      SSH_HOST='${lookup(self.triggers, "ssh_host", "")}'
+      SSH_USER='${lookup(self.triggers, "ssh_user", "")}'
+      SSH_PORT='${lookup(self.triggers, "ssh_port", "22")}'
+
+      if [ "$IS_SSH" = "true" ] && [ -n "$SSH_HOST" ]; then
+        printf '%s\n' "$TEARDOWN" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" 'bash -s'
+      elif [ "$IS_SSH" = "true" ]; then
+        echo "Skipping remote teardown: this resource predates the ssh_host trigger, so the target host is unknown."
+        echo "Stop the stacks manually if needed: docker compose -f /opt/github-runner/docker-compose.yml down"
       else
         printf '%s\n' "$TEARDOWN" | bash -s
       fi

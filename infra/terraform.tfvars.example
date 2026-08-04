@@ -30,8 +30,8 @@ enable_github_runners = true
 # github_runner_light_cpus   = "1"
 # github_runner_light_memory = "2g"
 # github_runner_name_prefix  = "github-runner"
-# github_runner_version      = "2.323.0"
-# github_runner_registration_timeout = 300
+# github_runner_version      = "2.336.0"
+# github_runner_registration_timeout = 900
 
 # Host memory tuning (applied during bootstrap)
 # zram_size_mib = 8192

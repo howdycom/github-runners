@@ -3,11 +3,13 @@ services:
     image: github-runner:local
     build:
       context: .
+      args:
+        RUNNER_VERSION: ${RUNNER_VERSION:-2.336.0}
     restart: unless-stopped
     # Give in-flight jobs and the deregistration cleanup time to finish on stop.
     stop_grace_period: 120s
     cpus: ${HEAVY_CPUS:-4}
-    mem_limit: ${HEAVY_MEMORY:-8g}
+    mem_limit: ${HEAVY_MEMORY:-16g}
     # Replica counts live here (fed from .env) rather than only in the deploy's
     # --scale flags, so a later bare `docker compose up -d` on the host does not
     # silently collapse each tier to a single runner.
@@ -21,7 +23,7 @@ services:
       RUNNER_LABELS: ${RUNNER_LABELS_HEAVY:-docker,ubuntu-22.04,heavy}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
       RUNNER_TIER: heavy
-      RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_VERSION: ${RUNNER_VERSION:-2.336.0}
       RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
     # Host docker group gid so the runner user can use the mounted socket
     # (DOCKER_GID is written to .env at deploy time).
@@ -34,19 +36,21 @@ services:
     image: github-runner:local
     build:
       context: .
+      args:
+        RUNNER_VERSION: ${RUNNER_VERSION:-2.336.0}
     restart: unless-stopped
     stop_grace_period: 120s
     cpus: ${LIGHT_CPUS:-1}
     mem_limit: ${LIGHT_MEMORY:-2g}
     deploy:
-      replicas: ${LIGHT_REPLICAS:-4}
+      replicas: ${LIGHT_REPLICAS:-8}
     environment:
       GITHUB_ORG_URL: ${GITHUB_ORG_URL}
       GITHUB_PAT: ${GITHUB_PAT}
       RUNNER_LABELS: ${RUNNER_LABELS_LIGHT:-docker,ubuntu-22.04,light}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-github-runner}
       RUNNER_TIER: light
-      RUNNER_VERSION: ${RUNNER_VERSION:-2.323.0}
+      RUNNER_VERSION: ${RUNNER_VERSION:-2.336.0}
       RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
     group_add:
       - "${DOCKER_GID:-999}"

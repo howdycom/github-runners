@@ -139,6 +139,9 @@ ssh youruser@<server-ip> "sudo docker compose -f /opt/github-runner/docker-compo
 - **Replica counts are durable:** counts are written to `.env` and consumed by `deploy.replicas` in the compose file, so running a bare `docker compose up -d` on the host (or acting through Portainer) does not collapse each tier to a single runner.
 - **`terraform destroy` stops the stacks:** a destroy-time provisioner brings both compose stacks down — letting the containers deregister themselves — and removes the `.env` holding the credential. Host tuning (swapfile, zram, sysctl, `daemon.json`) is intentionally left in place.
 - **Idempotent re-applies:** `daemon.json` and the zram config are only rewritten when their content changes, so a re-apply does not bounce dockerd and kill in-flight jobs.
+- **Runner binary is baked into the image**, downloaded once at build time via the `RUNNER_VERSION` build arg rather than once per container at startup. With 10 runners that is 215 MB of downloads instead of 2.1 GB, and it keeps first-boot registration inside the health gate's window on a modest uplink.
+- **Runners self-update.** `--disableupdate` is deliberately not passed: GitHub deprecates old runner versions and refuses their connections outright (`Runner version vX is deprecated and cannot receive messages`), which kills the listener on startup. `github_runner_version` therefore sets only the initial download, and the fleet heals itself instead of going dark when a version ages out. Bump it occasionally so fresh images start close to current.
+- **apt waits for the dpkg lock** (`-o DPkg::Lock::Timeout=600`). Ubuntu's `unattended-upgrades` routinely holds it for minutes after boot, which would otherwise fail the bootstrap outright.
 
 ## Host Memory Tuning
 The bootstrap step configures:
