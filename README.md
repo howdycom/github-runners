@@ -34,7 +34,19 @@ Runners come in two tiers, each independently scalable with its own labels and r
 | Tier  | Default labels               | Default count | Default limits |
 |-------|------------------------------|---------------|----------------|
 | heavy | `docker,ubuntu-22.04,heavy`  | 2             | 4 CPUs, 8 GB   |
-| light | `docker,ubuntu-22.04,light`  | 4             | 1 CPU, 2 GB    |
+| light | `docker,ubuntu-22.04,light`  | 8             | 2 CPUs, 4 GB   |
+
+The heavy tier matches a GitHub-hosted `ubuntu-latest` standard runner on CPU (4 vCPUs). Its memory is capped at 8 GB rather than the hosted 16 GB deliberately: **a `mem_limit` above physical RAM is never actually enforced**, so on a 16 GB host 16 GB would be a decorative number that lets one job exhaust the machine.
+
+The light tier gets 2 CPUs because 1 was measurably too few. Under a real node build, cgroup counters showed a light runner throttled 362 times for 26.8 s against 78.5 s of CPU actually consumed — roughly a quarter of its CPU demand denied by the quota, on a host that was 96% idle. Memory went to 4 GB because the same job peaked at 1.35 GB, uncomfortably close to a 2 GB cap where Docker OOM-kills the job rather than slowing it.
+
+Check for the same symptom on your own workloads before changing these:
+
+```bash
+for c in $(sudo docker ps -q --filter name=github-runner); do id=$(sudo docker inspect --format '{{.Id}}' "$c"); sudo cat "/sys/fs/cgroup/system.slice/docker-$id.scope/cpu.stat" | grep -E 'nr_throttled|throttled_usec'; done
+```
+
+> **`cpus` and `mem_limit` are ceilings, not reservations.** The defaults above deliberately oversubscribe a 16 GB / 16-thread box, so any single job can burst well beyond `RAM ÷ runners` while the fleet is mostly idle — which is the common case. The tradeoff is that many simultaneous jobs contend and push into zRAM/swap instead of each being throttled to a guaranteed slice.
 
 ## Prerequisites
 - You must be an organization owner or have appropriate permissions to manage runners at the organization level.
@@ -135,6 +147,9 @@ ssh youruser@<server-ip> "sudo docker compose -f /opt/github-runner/docker-compo
 - **Replica counts are durable:** counts are written to `.env` and consumed by `deploy.replicas` in the compose file, so running a bare `docker compose up -d` on the host (or acting through Portainer) does not collapse each tier to a single runner.
 - **`terraform destroy` stops the stacks:** a destroy-time provisioner brings both compose stacks down — letting the containers deregister themselves — and removes the `.env` holding the credential. Host tuning (swapfile, zram, sysctl, `daemon.json`) is intentionally left in place.
 - **Idempotent re-applies:** `daemon.json` and the zram config are only rewritten when their content changes, so a re-apply does not bounce dockerd and kill in-flight jobs.
+- **Runner binary is baked into the image**, downloaded once at build time via the `RUNNER_VERSION` build arg rather than once per container at startup. With 10 runners that is 215 MB of downloads instead of 2.1 GB, and it keeps first-boot registration inside the health gate's window on a modest uplink.
+- **Runners self-update.** `--disableupdate` is deliberately not passed: GitHub deprecates old runner versions and refuses their connections outright (`Runner version vX is deprecated and cannot receive messages`), which kills the listener on startup. `github_runner_version` therefore sets only the initial download, and the fleet heals itself instead of going dark when a version ages out. Bump it occasionally so fresh images start close to current.
+- **apt waits for the dpkg lock** (`-o DPkg::Lock::Timeout=600`). Ubuntu's `unattended-upgrades` routinely holds it for minutes after boot, which would otherwise fail the bootstrap outright.
 
 ## Host Memory Tuning
 The bootstrap step configures:

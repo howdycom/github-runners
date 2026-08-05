@@ -21,7 +21,7 @@ fi
 PAT_VALUE="$GITHUB_PAT"
 unset GITHUB_PAT
 
-RUNNER_VERSION="${RUNNER_VERSION:-2.323.0}"
+RUNNER_VERSION="${RUNNER_VERSION:-2.336.0}"
 RUNNER_LABELS="${RUNNER_LABELS:-docker,ubuntu-22.04}"
 RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-github-runner}"
 RUNNER_TIER="${RUNNER_TIER:-}"
@@ -53,7 +53,9 @@ cleanup() {
     echo "Removing runner registration..."
     REMOVE_TOKEN="$(mint_token remove-token || true)"
     if [ -n "${REMOVE_TOKEN}" ]; then
-      ./config.sh remove --unattended --token "${REMOVE_TOKEN}" || true
+      # `config.sh remove` takes only --token; passing --unattended makes it
+      # abort with "Unrecognized command-line input arguments".
+      ./config.sh remove --token "${REMOVE_TOKEN}" || true
     else
       echo "Could not mint a remove token; leaving deregistration to GitHub."
     fi
@@ -90,13 +92,17 @@ configure_runner() {
   if [ "${RUNNER_EPHEMERAL}" = "true" ]; then
     EXTRA_FLAGS+=(--ephemeral)
   fi
+  # Deliberately NOT --disableupdate: GitHub deprecates old runner versions and
+  # refuses their connections ("Runner version vX is deprecated and cannot
+  # receive messages"), which kills the listener on startup. Letting the runner
+  # self-update means a pinned RUNNER_VERSION only sets the initial download and
+  # the host heals itself instead of going dark when a version ages out.
   ./config.sh --url "$GITHUB_ORG_URL" \
     --token "${REG_TOKEN}" \
     --labels "$RUNNER_LABELS" \
     --name "$RUNNER_NAME" \
     --unattended \
     --replace \
-    --disableupdate \
     ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 }
 

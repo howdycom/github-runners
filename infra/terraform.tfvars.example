@@ -22,16 +22,16 @@ enable_github_runners = true
 #
 # github_runner_ephemeral    = true
 # github_runner_heavy_count  = 2
-# github_runner_light_count  = 4
+# github_runner_light_count  = 8
 # github_runner_heavy_labels = "docker,ubuntu-22.04,heavy"
 # github_runner_light_labels = "docker,ubuntu-22.04,light"
 # github_runner_heavy_cpus   = "4"
 # github_runner_heavy_memory = "8g"
-# github_runner_light_cpus   = "1"
-# github_runner_light_memory = "2g"
+# github_runner_light_cpus   = "2"
+# github_runner_light_memory = "4g"
 # github_runner_name_prefix  = "github-runner"
-# github_runner_version      = "2.323.0"
-# github_runner_registration_timeout = 300
+# github_runner_version      = "2.336.0"
+# github_runner_registration_timeout = 900
 
 # Host memory tuning (applied during bootstrap)
 # zram_size_mib = 8192

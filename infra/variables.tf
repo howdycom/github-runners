@@ -50,7 +50,7 @@ variable "github_runner_heavy_count" {
 variable "github_runner_light_count" {
   description = "Number of light-tier (lighter CI job) runner containers to deploy"
   type        = number
-  default     = 4
+  default     = 8
 }
 
 variable "github_runner_heavy_labels" {
@@ -66,13 +66,13 @@ variable "github_runner_light_labels" {
 }
 
 variable "github_runner_heavy_cpus" {
-  description = "CPU limit per heavy-tier runner container"
+  description = "CPU limit per heavy-tier runner container. Defaults to 4 to match a GitHub-hosted ubuntu-latest standard runner."
   type        = string
   default     = "4"
 }
 
 variable "github_runner_heavy_memory" {
-  description = "Memory limit per heavy-tier runner container"
+  description = "Memory limit per heavy-tier runner container. 8g keeps this an enforceable cap on a 16 GB host; a hosted ubuntu-latest runner nominally gets 16 GB, but a limit above physical RAM is never actually applied."
   type        = string
   default     = "8g"
 }
@@ -80,13 +80,13 @@ variable "github_runner_heavy_memory" {
 variable "github_runner_light_cpus" {
   description = "CPU limit per light-tier runner container"
   type        = string
-  default     = "1"
+  default     = "2"
 }
 
 variable "github_runner_light_memory" {
   description = "Memory limit per light-tier runner container"
   type        = string
-  default     = "2g"
+  default     = "4g"
 }
 
 variable "github_runner_name_prefix" {
@@ -98,13 +98,13 @@ variable "github_runner_name_prefix" {
 variable "github_runner_version" {
   description = "GitHub Actions runner version to install"
   type        = string
-  default     = "2.323.0"
+  default     = "2.336.0"
 }
 
 variable "github_runner_registration_timeout" {
   description = "Seconds to wait for all runners to show up online in GitHub before failing the apply"
   type        = number
-  default     = 300
+  default     = 900
 }
 
 variable "zram_size_mib" {
