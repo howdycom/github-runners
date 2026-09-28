@@ -53,16 +53,17 @@ resource "null_resource" "bootstrap_docker" {
         # or no extents are free.
         if command -v lvextend >/dev/null 2>&1; then
           ROOT_SRC=$(findmnt -no SOURCE / 2>/dev/null || true)
-          case "$ROOT_SRC" in
-            /dev/mapper/*|/dev/dm-*)
-              VG_NAME=$(sudo lvs --noheadings -o vg_name "$ROOT_SRC" 2>/dev/null | tr -d ' ' || true)
-              FREE_EXTENTS=$(sudo vgs --noheadings -o vg_free_count "$VG_NAME" 2>/dev/null | tr -dc '0-9' || true)
-              if [ -n "$VG_NAME" ] && [ -n "$FREE_EXTENTS" ] && [ "$FREE_EXTENTS" -gt 0 ]; then
-                echo "Growing $ROOT_SRC into $FREE_EXTENTS free extents in $VG_NAME..."
-                sudo lvextend -r -l +100%FREE "$ROOT_SRC"
-              fi
-              ;;
-          esac
+          # No case statement here: this script is parsed by macOS bash 3.2,
+          # which scans for the $() close paren without skipping the heredoc,
+          # so an unbalanced ) in a case pattern is a syntax error.
+          if [ "$${ROOT_SRC#/dev/mapper/}" != "$ROOT_SRC" ] || [ "$${ROOT_SRC#/dev/dm-}" != "$ROOT_SRC" ]; then
+            VG_NAME=$(sudo lvs --noheadings -o vg_name "$ROOT_SRC" 2>/dev/null | tr -d ' ' || true)
+            FREE_EXTENTS=$(sudo vgs --noheadings -o vg_free_count "$VG_NAME" 2>/dev/null | tr -dc '0-9' || true)
+            if [ -n "$VG_NAME" ] && [ -n "$FREE_EXTENTS" ] && [ "$FREE_EXTENTS" -gt 0 ]; then
+              echo "Growing $ROOT_SRC into $FREE_EXTENTS free extents in $VG_NAME..."
+              sudo lvextend -r -l +100%FREE "$ROOT_SRC"
+            fi
+          fi
         fi
 
         # --- Docker: install if missing, always start on boot ---
