@@ -33,8 +33,8 @@ locals {
 resource "null_resource" "bootstrap_docker" {
   triggers = {
     docker_host   = var.docker_host
-    daemon_config = "v1"
-    host_prep     = "v3-docker-install-zram-swap"
+    daemon_config = "v2-log-rotation"
+    host_prep     = "v4-docker-install-zram-swap-disk-guard"
     zram_size_mib = var.zram_size_mib
     swap_size_gib = var.swap_size_gib
   }
@@ -46,6 +46,25 @@ resource "null_resource" "bootstrap_docker" {
 
       HOST_PREP=$(cat <<'REMOTE_SCRIPT'
         set -e
+
+        # --- Root LV: grow into free VG space (Ubuntu defaults to a 100G LV
+        # even on much larger disks; a full root takes the whole machine down).
+        # -r resizes the filesystem online. No-op when the root is not on LVM
+        # or no extents are free.
+        if command -v lvextend >/dev/null 2>&1; then
+          ROOT_SRC=$(findmnt -no SOURCE / 2>/dev/null || true)
+          # No case statement here: this script is parsed by macOS bash 3.2,
+          # which scans for the $() close paren without skipping the heredoc,
+          # so an unbalanced ) in a case pattern is a syntax error.
+          if [ "$${ROOT_SRC#/dev/mapper/}" != "$ROOT_SRC" ] || [ "$${ROOT_SRC#/dev/dm-}" != "$ROOT_SRC" ]; then
+            VG_NAME=$(sudo lvs --noheadings -o vg_name "$ROOT_SRC" 2>/dev/null | tr -d ' ' || true)
+            FREE_EXTENTS=$(sudo vgs --noheadings -o vg_free_count "$VG_NAME" 2>/dev/null | tr -dc '0-9' || true)
+            if [ -n "$VG_NAME" ] && [ -n "$FREE_EXTENTS" ] && [ "$FREE_EXTENTS" -gt 0 ]; then
+              echo "Growing $ROOT_SRC into $FREE_EXTENTS free extents in $VG_NAME..."
+              sudo lvextend -r -l +100%FREE "$ROOT_SRC"
+            fi
+          fi
+        fi
 
         # --- Docker: install if missing, always start on boot ---
         if ! command -v docker >/dev/null 2>&1; then
@@ -97,9 +116,45 @@ resource "null_resource" "bootstrap_docker" {
         echo 'vm.swappiness=100' | sudo tee /etc/sysctl.d/99-github-runners.conf > /dev/null
         sudo sysctl -q -p /etc/sysctl.d/99-github-runners.conf
 
+        # --- journald cap: bound log growth so it can never fill the disk ---
+        printf '[Journal]\nSystemMaxUse=500M\nRuntimeMaxUse=200M\n' > /tmp/github-runners-journald.conf
+        if ! sudo cmp -s /tmp/github-runners-journald.conf /etc/systemd/journald.conf.d/99-github-runners.conf; then
+          sudo mkdir -p /etc/systemd/journald.conf.d
+          sudo cp /tmp/github-runners-journald.conf /etc/systemd/journald.conf.d/99-github-runners.conf
+          sudo systemctl restart systemd-journald
+        fi
+
+        # --- Disk guard: reclaim space automatically before pressure becomes
+        # an outage. Only touches build cache, unused images, journals, and
+        # caches — never running containers or checked-out jobs.
+        sudo tee /usr/local/bin/disk-guard.sh > /dev/null <<'GUARD_EOF'
+#!/bin/bash
+USAGE=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+[ -z "$USAGE" ] && exit 0
+if [ "$USAGE" -ge 80 ]; then
+  logger -t disk-guard "/ at $USAGE%: pruning docker build cache, dangling images, journal"
+  docker builder prune -af >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+  journalctl --vacuum-size=200M >/dev/null 2>&1 || true
+fi
+if [ "$USAGE" -ge 90 ]; then
+  logger -t disk-guard "/ at $USAGE%: aggressive reclaim (unused images, caches)"
+  docker image prune -af >/dev/null 2>&1 || true
+  docker system prune -f >/dev/null 2>&1 || true
+  journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+  apt-get clean >/dev/null 2>&1 || true
+  find /tmp /var/tmp -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+fi
+GUARD_EOF
+        sudo chmod +x /usr/local/bin/disk-guard.sh
+        printf '*/15 * * * * root /usr/local/bin/disk-guard.sh\n' | sudo tee /etc/cron.d/github-runners-disk-guard > /dev/null
+        sudo chmod 644 /etc/cron.d/github-runners-disk-guard
+
         # --- Docker daemon config: rewrite + restart only when changed, so a
         # re-apply does not bounce dockerd and kill in-flight jobs ---
-        DAEMON_JSON='{"default-address-pools":[{"base":"10.0.0.0/8","size":24}]}'
+        # Log rotation is part of the disk defense: the default json-file
+        # driver grows container logs without bound.
+        DAEMON_JSON='{"default-address-pools":[{"base":"10.0.0.0/8","size":24}],"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}'
         if [ ! -f /etc/docker/daemon.json ] || [ "$(sudo cat /etc/docker/daemon.json)" != "$DAEMON_JSON" ]; then
           echo "$DAEMON_JSON" | sudo tee /etc/docker/daemon.json > /dev/null
           sudo systemctl restart docker

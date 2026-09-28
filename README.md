@@ -150,6 +150,7 @@ ssh youruser@<server-ip> "sudo docker compose -f /opt/github-runner/docker-compo
 - **Runner binary is baked into the image**, downloaded once at build time via the `RUNNER_VERSION` build arg rather than once per container at startup. With 10 runners that is 215 MB of downloads instead of 2.1 GB, and it keeps first-boot registration inside the health gate's window on a modest uplink.
 - **Runners self-update.** `--disableupdate` is deliberately not passed: GitHub deprecates old runner versions and refuses their connections outright (`Runner version vX is deprecated and cannot receive messages`), which kills the listener on startup. `github_runner_version` therefore sets only the initial download, and the fleet heals itself instead of going dark when a version ages out. Bump it occasionally so fresh images start close to current.
 - **apt waits for the dpkg lock** (`-o DPkg::Lock::Timeout=600`). Ubuntu's `unattended-upgrades` routinely holds it for minutes after boot, which would otherwise fail the bootstrap outright.
+- **Disk pressure is handled in layers:** the bootstrap grows the root LV into any free VG space (Ubuntu defaults to a 100G LV even on much larger disks), caps journald at 500M, rotates container logs (`max-size 10m`, `max-file 3`), and installs a `disk-guard` cron (every 15 min) that prunes build cache/unused images once `/` passes 80% (more aggressively at 90%). Runner containers also wipe `_work`/`_diag` at startup so job leftovers can't accumulate across ephemeral jobs.
 
 ## Host Memory Tuning
 The bootstrap step configures:
