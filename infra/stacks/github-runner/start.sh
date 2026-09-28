@@ -106,6 +106,13 @@ configure_runner() {
     ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 }
 
+# Wipe job leftovers from previous runs. The container restarts after every
+# ephemeral job but its writable layer persists, so without this each checkout,
+# downloaded action, and tool cache accumulates until the host disk fills.
+# Safe here: no job can be running at container start. bin/ and externals/
+# (runner binary, node runtime) are deliberately kept.
+rm -rf ./_work ./_diag
+
 if [ "${RUNNER_EPHEMERAL}" = "true" ]; then
   # Ephemeral runners are auto-removed by GitHub after one job, so any local
   # config left over from a previous container run is stale — drop it and
