@@ -39,6 +39,7 @@ resource "google_compute_instance_template" "runner" {
     startup-script         = file("${path.module}/runner/startup.sh")
     runner-version         = var.runner_version
     runner-sha256          = var.runner_sha256
+    idle-timeout-seconds   = tostring(var.idle_timeout_minutes * 60)
     block-project-ssh-keys = "TRUE"
     enable-oslogin         = "TRUE"
   }

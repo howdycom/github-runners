@@ -14,6 +14,7 @@ set -Eeuo pipefail
 RUNNER_DIR="${GHR_RUNNER_DIR:-/opt/actions-runner}"
 RUNNER_USER=runner
 INSTALLED_MARKER="${GHR_INSTALLED_MARKER:-/etc/ghr-installed}"
+IDLE_POLL_SECONDS="${GHR_IDLE_POLL_SECONDS:-5}"
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/instance/attributes
 APT_OPTS=(-o DPkg::Lock::Timeout=600 -y --no-install-recommends)
 
@@ -124,13 +125,35 @@ run_one_job() {
 
   install_runner_host
 
+  local idle_timeout
+  idle_timeout="$(metadata idle-timeout-seconds)"
+
   # --jitconfig registers this VM as an ephemeral runner for a single job.
   # run.sh returns after that job, or when the controller removes the runner.
   log "starting runner"
+  runuser -u "${RUNNER_USER}" -- "${RUNNER_DIR}/run.sh" --jitconfig "${jit_config}" &
+  local runner_pid=$!
+
+  # Power off when no job starts in time, even if the controller is down.
+  local deadline=$((SECONDS + idle_timeout))
+  while kill -0 "${runner_pid}" 2>/dev/null; do
+    if ! job_started && [ "${SECONDS}" -ge "${deadline}" ]; then
+      log "no job within ${idle_timeout}s"
+      kill -TERM "${runner_pid}" 2>/dev/null || true
+      shutdown_now
+    fi
+    sleep "${IDLE_POLL_SECONDS}"
+  done
+
   local exit_code=0
-  runuser -u "${RUNNER_USER}" -- "${RUNNER_DIR}/run.sh" --jitconfig "${jit_config}" || exit_code=$?
+  wait "${runner_pid}" || exit_code=$?
   log "runner exited with ${exit_code}"
   shutdown_now
+}
+
+# The runner writes a Worker_*.log when it starts a job.
+job_started() {
+  compgen -G "${RUNNER_DIR}/_diag/Worker_*.log" >/dev/null
 }
 
 main() {

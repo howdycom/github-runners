@@ -102,7 +102,7 @@ variable "max_vms" {
 
 variable "idle_timeout_minutes" {
   type        = number
-  description = "A VM whose runner has not taken a job after this many minutes is deleted, for example when the job was cancelled while the VM booted."
+  description = "A VM whose runner has not taken a job after this many minutes powers itself off, and the controller deletes it. This happens, for example, when the job was cancelled while the VM booted."
   default     = 15
 }
 

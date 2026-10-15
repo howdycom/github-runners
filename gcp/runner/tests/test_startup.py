@@ -86,6 +86,7 @@ class Harness:
             "FAKE_DOWNLOADS": str(self.downloads),
             "GHR_RUNNER_DIR": str(self.runner_dir),
             "GHR_INSTALLED_MARKER": str(self.marker),
+            "GHR_IDLE_POLL_SECONDS": "0.1",
         }
 
     def calls(self) -> list[str]:
@@ -167,3 +168,37 @@ def test_refuses_a_runner_whose_checksum_does_not_match(harness: Harness) -> Non
     assert "ghr: failed at line" in result.stdout
     assert "systemctl poweroff" in harness.calls()
     assert not (harness.runner_dir / "dependencies-installed").exists()
+
+
+def installed_runner(harness: Harness, run_script: str) -> None:
+    """Marks the host as installed and puts a fake run.sh in place."""
+    harness.marker.touch()
+    run_sh = harness.runner_dir / "run.sh"
+    run_sh.write_text("#!/bin/bash\n" + run_script)
+    run_sh.chmod(0o755)
+    harness.set_metadata("jit-config", "config")
+    harness.set_metadata("idle-timeout-seconds", "1")
+
+
+def test_powers_off_when_no_job_starts_in_time(harness: Harness) -> None:
+    installed_runner(harness, "exec sleep 30\n")
+
+    result = harness.run(timeout=15)
+
+    assert "ghr: no job within 1s" in result.stdout
+    assert "systemctl poweroff" in harness.calls()
+
+
+def test_lets_a_started_job_run_past_the_idle_timeout(harness: Harness) -> None:
+    installed_runner(
+        harness,
+        'mkdir -p "$(dirname "$0")/_diag"\n'
+        'touch "$(dirname "$0")/_diag/Worker_20270115-080000-utc.log"\n'
+        "sleep 2\n",
+    )
+
+    result = harness.run(timeout=15)
+
+    assert "no job within" not in result.stdout
+    assert "ghr: runner exited with 0" in result.stdout
+    assert "systemctl poweroff" in harness.calls()
