@@ -38,6 +38,43 @@ def test_zone_order_is_stable_per_job_and_covers_every_zone() -> None:
     assert sorted(zone_order(zones, 5)) == ["a", "b", "c"]
 
 
+def test_zone_order_starts_at_the_next_zone_on_a_new_attempt() -> None:
+    zones = ("a", "b", "c")
+    assert zone_order(zones, 4, attempt=1) == ["c", "a", "b"]
+
+
+def test_a_vm_still_starting_at_the_deadline_counts_as_created(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.insert = lambda *args: False  # type: ignore[method-assign,assignment]
+    _, response = controller(github, compute).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
+    assert response == {"result": "created"}
+    assert "ghr-1001" in github.runners
+
+
+def test_reconcile_retries_a_late_capacity_failure_in_another_zone(github: FakeGitHub, compute: FakeCompute) -> None:
+    # The webhook's insert passed its deadline and then failed for capacity, so
+    # the VM never appeared and the job is still queued.
+    zones = ("zone-a", "zone-b", "zone-c")
+    webhook_zone = zone_order(zones, 11)[0]
+    github.jobs = {"app": [{"id": 11, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"}]}
+
+    controller(github, compute, repositories=("app",)).reconcile()
+
+    assert compute.inserts[0][0] != webhook_zone
+
+
+def test_reconcile_moves_to_the_next_zone_on_each_pass(github: FakeGitHub, compute: FakeCompute) -> None:
+    zones = ("zone-a", "zone-b", "zone-c")
+    github.jobs = {"app": [{"id": 11, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"}]}
+    first_zones = []
+    for elapsed in (0, 120, 240):
+        compute.instances.clear()
+        ctrl = Controller(make_config(repositories=("app",)), github, compute, clock=lambda: NOW + elapsed, monotonic=lambda: 0.0)
+        ctrl.reconcile()
+        first_zones.append(compute.inserts[-1][0])
+        github.runners.clear()
+    assert sorted(first_zones) == sorted(zones)
+
+
 # --- Webhook: validation ----------------------------------------------------
 
 
@@ -284,3 +321,113 @@ def test_reconcile_continues_after_a_failure(github: FakeGitHub, compute: FakeCo
 def test_webhook_response_is_json_serializable(github: FakeGitHub, compute: FakeCompute) -> None:
     _, response = controller(github, compute).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
     json.dumps(response)
+
+
+# --- Remaining branches -------------------------------------------------------
+
+
+def test_ignores_other_events(github: FakeGitHub, compute: FakeCompute) -> None:
+    body = b"{}"
+    status, _ = controller(github, compute).handle_webhook({"X-GitHub-Event": "push", "X-Hub-Signature-256": sign(body)}, body, SECRET)
+    assert status == 202
+
+
+def test_ignores_other_actions(github: FakeGitHub, compute: FakeCompute) -> None:
+    status, response = controller(github, compute).handle_webhook(*webhook_request("in_progress", job(1001)), SECRET)
+    assert (status, response["reason"]) == (202, "action in_progress")
+
+
+def test_completed_job_whose_vm_is_already_gone(github: FakeGitHub, compute: FakeCompute) -> None:
+    _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001, runner_name="ghr-1001")), SECRET)
+    assert response == {"result": "already gone"}
+
+
+def test_cancelled_job_without_a_vm(github: FakeGitHub, compute: FakeCompute) -> None:
+    _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001)), SECRET)
+    assert response == {"result": "no vm"}
+
+
+def test_cancelled_job_whose_vm_never_registered(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.instances["ghr-1001"] = instance("ghr-1001")
+    _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001)), SECRET)
+    assert response == {"result": "deleted"} and compute.deleted == ["ghr-1001"]
+
+
+def test_stale_registration_cleanup_keeps_runners_with_a_longer_name(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.runners["ghr-1001"] = {"id": 1, "name": "ghr-1001", "busy": False, "status": "offline"}
+    github.runners["ghr-10010"] = {"id": 2, "name": "ghr-10010", "busy": True, "status": "online"}
+    controller(github, compute).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
+    assert github.deleted == [1]
+
+
+def test_runner_group_is_looked_up_once_per_cache_period(github: FakeGitHub, compute: FakeCompute) -> None:
+    lookups = []
+    group = github.group
+    github.runner_group = lambda name: lookups.append(name) or group  # type: ignore[method-assign]
+    ctrl = controller(github, compute)
+    ctrl.handle_webhook(*webhook_request("queued", job(1001)), SECRET)
+    ctrl.handle_webhook(*webhook_request("queued", job(1002)), SECRET)
+    assert len(lookups) == 1
+
+
+def test_reconcile_keeps_a_runner_whose_vm_just_appeared(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.runners = {"ghr-new": {"id": 1, "name": "ghr-new", "busy": False, "status": "offline"}}
+    ctrl = controller(github, compute)
+    original_list = compute.list_instances
+    compute.list_instances = lambda: []  # type: ignore[method-assign]
+    compute.instances["ghr-new"] = instance("ghr-new", "PROVISIONING")
+    summary = ctrl.reconcile()
+    compute.list_instances = original_list  # type: ignore[method-assign]
+    assert summary["orphan_runners"] == 0 and github.deleted == []
+
+
+def test_reconcile_counts_errors_while_removing_orphan_runners(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.runners = {"ghr-orphan": {"id": 1, "name": "ghr-orphan", "busy": False, "status": "offline"}}
+
+    def failing_delete(runner_id: int) -> bool:
+        raise RuntimeError("github down")
+
+    github.delete_runner = failing_delete  # type: ignore[method-assign]
+    assert controller(github, compute).reconcile()["errors"] == 1
+
+
+def missed(job_ids: range) -> dict[str, list[dict[str, object]]]:
+    return {"app": [{"id": i, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"} for i in job_ids]}
+
+
+def test_reconcile_starts_at_most_a_fixed_number_of_vms_per_pass(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = missed(range(100, 115))
+    summary = controller(github, compute, repositories=("app",), max_vms=50).reconcile()
+    assert summary["started"] == 10
+
+
+def test_reconcile_stops_starting_vms_at_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = missed(range(100, 105))
+    summary = controller(github, compute, repositories=("app",), max_vms=2).reconcile()
+    assert summary["started"] == 2 and len(compute.inserts) == 2
+
+
+def test_reconcile_continues_after_a_failed_start(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = missed(range(100, 102))
+    compute.fail_insert = ComputeError("quota exceeded")
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+    assert summary["errors"] == 2
+
+
+def test_reconcile_skips_a_repository_it_cannot_list(github: FakeGitHub, compute: FakeCompute) -> None:
+    def failing_queued_jobs(repository: str) -> list[dict[str, object]]:
+        if repository == "broken":
+            raise RuntimeError("not found")
+        return missed(range(100, 101))["app"]
+
+    github.queued_jobs = failing_queued_jobs  # type: ignore[method-assign]
+    summary = controller(github, compute, repositories=("broken", "app")).reconcile()
+    assert summary["started"] == 1
+
+
+def test_reconcile_moves_on_when_the_webhook_created_the_vm_meanwhile(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = missed(range(100, 102))
+    compute.instances["ghr-100"] = instance("ghr-100", "PROVISIONING")
+    compute.list_instances = lambda: []  # type: ignore[method-assign]  # snapshot taken before the webhook
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+    assert summary["started"] == 1 and [name for _, name, _ in compute.inserts] == ["ghr-101"]

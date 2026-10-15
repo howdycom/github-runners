@@ -22,6 +22,8 @@ RECONCILE_DEADLINE_SECONDS = 5.0
 QUEUE_GRACE_SECONDS = 120
 # The reconcile job starts at most this many VMs per pass.
 RECONCILE_MAX_STARTS = 10
+# Cloud Scheduler runs the reconcile job this often (controller.tf).
+RECONCILE_INTERVAL_SECONDS = 120
 RUNNER_GROUP_CACHE_SECONDS = 600
 
 
@@ -40,7 +42,7 @@ class GitHubPort(Protocol):
 class ComputePort(Protocol):
     def list_instances(self) -> list[dict[str, Any]]: ...
     def find(self, name: str) -> dict[str, Any] | None: ...
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> None: ...
+    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> bool: ...
     def delete(self, instance: dict[str, Any]) -> None: ...
 
 
@@ -50,9 +52,9 @@ def wants_runner(config: Config, job_labels: Iterable[str]) -> bool:
     return config.runner_label in labels and labels <= set(config.runner_labels)
 
 
-def zone_order(zones: tuple[str, ...], job_id: int) -> list[str]:
-    """Spreads jobs over zones. The same job always gets the same order."""
-    start = job_id % len(zones)
+def zone_order(zones: tuple[str, ...], job_id: int, attempt: int = 0) -> list[str]:
+    """Spreads jobs over zones. A new attempt starts at the next zone."""
+    start = (job_id + attempt) % len(zones)
     return [*zones[start:], *zones[:start]]
 
 
@@ -130,8 +132,12 @@ class Controller:
 
     # --- Starting runners -----------------------------------------------------
 
-    def start_runner(self, job_id: int, deadline: float) -> str:
-        """Creates the VM for a queued job. Safe to call more than once per job."""
+    def start_runner(self, job_id: int, deadline: float, attempt: int = 0) -> str:
+        """Creates the VM for a queued job. Safe to call more than once per job.
+
+        The attempt number rotates the zone order, so a retry after a late
+        capacity failure does not start in the same zone again.
+        """
         name = self.vm_name(job_id)
         if self._compute.find(name):
             return "exists"
@@ -143,9 +149,11 @@ class Controller:
 
         runner_id, jit_config = self._register_runner(name)
         try:
-            for zone in zone_order(self._config.zones, job_id):
+            for zone in zone_order(self._config.zones, job_id, attempt):
                 try:
-                    self._compute.insert(zone, name, self._config.instance_template, {"jit-config": jit_config}, deadline)
+                    started = self._compute.insert(
+                        zone, name, self._config.instance_template, {"jit-config": jit_config}, deadline
+                    )
                 except ZoneUnavailable as exc:
                     log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
                     continue
@@ -153,7 +161,15 @@ class Controller:
                     # Another request created this VM first; it has its own runner.
                     self._github.delete_runner(runner_id)
                     return "exists"
-                log.info("created runner vm", vm=name, zone=zone, job_id=job_id)
+                if started:
+                    log.info("created runner vm", vm=name, zone=zone, job_id=job_id)
+                else:
+                    log.info(
+                        "runner vm still starting at the deadline; reconcile retries in another zone if it fails",
+                        vm=name,
+                        zone=zone,
+                        job_id=job_id,
+                    )
                 return "created"
         except Exception:
             self._github.delete_runner(runner_id)
@@ -247,8 +263,11 @@ class Controller:
         for job in self._missed_jobs(now, vm_names):
             if summary["started"] >= RECONCILE_MAX_STARTS:
                 break
+            # The webhook made attempt 0. Each reconcile pass since then is one
+            # more attempt, so retries move through the zones.
+            attempt = max(1, int((now - _timestamp(job["created_at"])) // RECONCILE_INTERVAL_SECONDS))
             try:
-                result = self.start_runner(int(job["id"]), self._monotonic() + RECONCILE_DEADLINE_SECONDS)
+                result = self.start_runner(int(job["id"]), self._monotonic() + RECONCILE_DEADLINE_SECONDS, attempt)
             except Exception as exc:
                 summary["errors"] += 1
                 log.error("reconcile failed to start a runner", job_id=job["id"], detail=str(exc))

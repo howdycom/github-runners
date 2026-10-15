@@ -104,13 +104,18 @@ def test_insert_raises_other_operation_errors() -> None:
     assert not isinstance(exc.value, ZoneUnavailable)
 
 
+def test_insert_reports_a_started_vm() -> None:
+    session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]})
+    assert make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10) is True
+
+
 def test_insert_returns_when_the_deadline_passes() -> None:
     op_url = f"{API}/projects/p/zones/zone-a/operations/op-1"
     session = FakeSession(
         get_responses={f"{API}/{TEMPLATE}": [template_response()], op_url: [FakeResponse(200, {"name": "op-1", "status": "RUNNING"})]},
         post_response=FakeResponse(200, {"name": "op-1", "status": "RUNNING"}),
     )
-    make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=3)
+    assert make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=3) is False
     assert sum(1 for c in session.calls if c[1] == op_url) == 3
 
 
@@ -155,3 +160,21 @@ def test_instance_helpers() -> None:
     instance = {"zone": "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a", "creationTimestamp": "2027-01-15T00:00:00.000-08:00"}
     assert zone_of(instance) == "us-central1-a"
     assert created_at(instance) == 1_800_000_000.0
+
+
+def test_find_returns_the_named_vm_or_none() -> None:
+    url = f"{API}/projects/p/aggregated/instances"
+    found = FakeSession(get_responses={url: [FakeResponse(200, {"items": {"zones/zone-a": {"instances": [{"name": "ghr-1"}]}}})]})
+    assert make_compute(found).find("ghr-1") == {"name": "ghr-1"}
+    assert found.calls[0][2]["params"]["filter"] == '(name = "ghr-1") (labels.ghr_pool = "ghr")'
+
+    missing = FakeSession(get_responses={url: [FakeResponse(200, {"items": {}})]})
+    assert make_compute(missing).find("ghr-1") is None
+
+
+def test_uses_application_default_credentials_without_a_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ghr.compute as compute_module
+
+    monkeypatch.setattr(compute_module.google.auth, "default", lambda scopes: ("credentials", "project"))
+    monkeypatch.setattr(compute_module, "AuthorizedSession", lambda credentials: f"session for {credentials}")
+    assert Compute("p", "ghr")._session == "session for credentials"

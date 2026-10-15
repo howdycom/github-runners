@@ -118,7 +118,7 @@ class FakeCompute:
     def find(self, name: str) -> dict[str, Any] | None:
         return self.instances.get(name)
 
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> None:
+    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> bool:
         self.inserts.append((zone, name, metadata))
         if self.fail_insert:
             raise self.fail_insert
@@ -127,6 +127,7 @@ class FakeCompute:
         if zone in self.full_zones:
             raise ZoneUnavailable(zone)
         self.instances[name] = instance(name, "PROVISIONING", zone, age_seconds=0)
+        return True
 
     def delete(self, inst: dict[str, Any]) -> None:
         self.deleted.append(inst["name"])
