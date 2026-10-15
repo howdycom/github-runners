@@ -43,7 +43,7 @@ Many organizations enforce the policy `constraints/compute.vmExternalIpAccess`, 
 
 ## Machine size
 
-The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type` and `disk_size_gb` to fit your jobs.
+The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type`, `disk_size_gb` and `disk_type` to fit your jobs.
 
 ## Prerequisites
 

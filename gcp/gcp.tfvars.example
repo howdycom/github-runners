@@ -25,6 +25,7 @@ repositories = ["your-repo"]
 # runner_label          = "gcp-x64"
 # machine_type          = "n2d-standard-2"
 # disk_size_gb          = 75
+# disk_type             = "pd-balanced"
 # max_vms               = 20
 # idle_timeout_minutes  = 15
 # max_vm_lifetime_hours = 3

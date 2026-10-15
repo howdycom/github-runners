@@ -51,8 +51,19 @@ variable "machine_type" {
 
 variable "disk_size_gb" {
   type        = number
-  description = "Boot disk size of each runner VM, in GB (pd-balanced)."
+  description = "Boot disk size of each runner VM, in GB."
   default     = 75
+}
+
+variable "disk_type" {
+  type        = string
+  description = "Boot disk type of each runner VM. pd-ssd speeds up disk-heavy builds at a higher price; pd-standard is cheaper and slower."
+  default     = "pd-balanced"
+
+  validation {
+    condition     = contains(["pd-balanced", "pd-ssd", "pd-standard"], var.disk_type)
+    error_message = "Use pd-balanced, pd-ssd or pd-standard."
+  }
 }
 
 variable "source_image" {
