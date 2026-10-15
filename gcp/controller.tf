@@ -149,16 +149,35 @@ resource "google_storage_bucket_object" "controller" {
 
 # --- Functions --------------------------------------------------------------
 
-# Receives GitHub's workflow_job webhooks. It is reachable from the internet,
-# because GitHub has to reach it; every request must carry a valid HMAC
-# signature made with the webhook secret.
-resource "google_cloudfunctions2_function" "webhook" {
-  name     = "${var.name_prefix}-webhook"
+locals {
+  # Both functions run the same source and settings. The key is the entry point.
+  controller_functions = {
+    # Receives GitHub's workflow_job webhooks. It is reachable from the
+    # internet, because GitHub has to reach it; every request must carry a
+    # valid HMAC signature made with the webhook secret.
+    webhook = {
+      timeout_seconds    = 30
+      max_instance_count = 10
+    }
+    # Cleans up finished and idle VMs and starts VMs for queued jobs whose
+    # webhook was lost. Only the scheduler's service account can call it. One
+    # instance at a time, so two passes never act on the same VM.
+    reconcile = {
+      timeout_seconds    = 110
+      max_instance_count = 1
+    }
+  }
+}
+
+resource "google_cloudfunctions2_function" "controller" {
+  for_each = local.controller_functions
+
+  name     = "${var.name_prefix}-${each.key}"
   location = var.region
 
   build_config {
     runtime         = "python313"
-    entry_point     = "webhook"
+    entry_point     = each.key
     service_account = google_service_account.build.id
 
     source {
@@ -172,8 +191,8 @@ resource "google_cloudfunctions2_function" "webhook" {
   service_config {
     service_account_email          = google_service_account.controller.email
     available_memory               = "256M"
-    timeout_seconds                = 30
-    max_instance_count             = 10
+    timeout_seconds                = each.value.timeout_seconds
+    max_instance_count             = each.value.max_instance_count
     ingress_settings               = "ALLOW_ALL"
     all_traffic_on_latest_revision = true
     environment_variables          = local.controller_env
@@ -198,62 +217,14 @@ resource "google_cloudfunctions2_function" "webhook" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "webhook_public" {
-  name     = google_cloudfunctions2_function.webhook.service_config[0].service
+  name     = google_cloudfunctions2_function.controller["webhook"].service_config[0].service
   location = var.region
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
 
-# Cleans up finished and idle VMs and starts VMs for queued jobs whose webhook
-# was lost. Only the scheduler's service account can call it. One instance
-# at a time, so two passes never act on the same VM.
-resource "google_cloudfunctions2_function" "reconcile" {
-  name     = "${var.name_prefix}-reconcile"
-  location = var.region
-
-  build_config {
-    runtime         = "python313"
-    entry_point     = "reconcile"
-    service_account = google_service_account.build.id
-
-    source {
-      storage_source {
-        bucket = google_storage_bucket.source.name
-        object = google_storage_bucket_object.controller.name
-      }
-    }
-  }
-
-  service_config {
-    service_account_email          = google_service_account.controller.email
-    available_memory               = "256M"
-    timeout_seconds                = 110
-    max_instance_count             = 1
-    ingress_settings               = "ALLOW_ALL"
-    all_traffic_on_latest_revision = true
-    environment_variables          = local.controller_env
-
-    dynamic "secret_environment_variables" {
-      for_each = local.controller_secrets
-      content {
-        key        = secret_environment_variables.key
-        project_id = var.project_id
-        secret     = secret_environment_variables.value
-        version    = "latest"
-      }
-    }
-  }
-
-  depends_on = [
-    google_project_iam_member.build,
-    google_storage_bucket_iam_member.build_source,
-    google_secret_manager_secret_iam_member.controller,
-    google_storage_bucket_iam_member.controller_locks,
-  ]
-}
-
 resource "google_cloud_run_v2_service_iam_member" "reconcile_scheduler" {
-  name     = google_cloudfunctions2_function.reconcile.service_config[0].service
+  name     = google_cloudfunctions2_function.controller["reconcile"].service_config[0].service
   location = var.region
   role     = "roles/run.invoker"
   member   = google_service_account.scheduler.member
@@ -271,11 +242,11 @@ resource "google_cloud_scheduler_job" "reconcile" {
 
   http_target {
     http_method = "POST"
-    uri         = google_cloudfunctions2_function.reconcile.url
+    uri         = google_cloudfunctions2_function.controller["reconcile"].url
 
     oidc_token {
       service_account_email = google_service_account.scheduler.email
-      audience              = google_cloudfunctions2_function.reconcile.url
+      audience              = google_cloudfunctions2_function.controller["reconcile"].url
     }
   }
 

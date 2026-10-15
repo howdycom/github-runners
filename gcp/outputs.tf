@@ -1,6 +1,6 @@
 output "webhook_url" {
   description = "Set this as the GitHub App's webhook URL."
-  value       = google_cloudfunctions2_function.webhook.url
+  value       = google_cloudfunctions2_function.controller["webhook"].url
 }
 
 output "runs_on" {
