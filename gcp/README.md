@@ -33,6 +33,8 @@ Compute Engine also deletes every VM after `max_vm_lifetime_hours`, whatever hap
 
 VMs accept no inbound traffic: the network has no ingress firewall rules, so the implied deny-all rule applies.
 
+The controller's Compute Engine role has an IAM condition: for instances and disks, it applies only to names that start with `<prefix>-`. The internet-facing webhook cannot change or delete any other VM in the project.
+
 ## Machine size
 
 The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type` and `disk_size_gb` to fit your jobs.

@@ -37,6 +37,20 @@ resource "google_project_iam_member" "controller_compute" {
   project = var.project_id
   role    = "roles/compute.instanceAdmin.v1"
   member  = google_service_account.controller.member
+
+  # For instances and disks, only the runner VMs (<prefix>-<job id>) and their
+  # boot disks, which share the VM's name. The other resources the controller
+  # uses (the template, the subnetwork, operations and project-level list
+  # calls) are other types, so the first clause allows them.
+  condition {
+    title       = "${var.name_prefix} runner VMs only"
+    description = "Instances and disks named ${var.name_prefix}-*"
+    expression  = <<-EOT
+      (resource.type != "compute.googleapis.com/Instance" && resource.type != "compute.googleapis.com/Disk")
+      || resource.name.extract("/instances/{name}").startsWith("${var.name_prefix}-")
+      || resource.name.extract("/disks/{name}").startsWith("${var.name_prefix}-")
+    EOT
+  }
 }
 
 resource "google_secret_manager_secret_iam_member" "controller" {
