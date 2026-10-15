@@ -20,7 +20,7 @@ A **reconcile** function runs every two minutes. It:
 - removes runner registrations whose VM no longer exists;
 - creates a VM for any job in `repositories` queued for more than two minutes without one. This covers lost webhooks, zones without capacity and a full pool.
 
-Compute Engine also deletes every VM after `max_vm_lifetime_hours`, whatever happens to the job or the controller.
+Compute Engine also deletes every VM after `max_vm_lifetime_hours` (default 6, GitHub's default job timeout), whatever happens to the job or the controller. A job still running then fails as a lost runner, not as a timeout. Set `timeout-minutes` below that limit on jobs that use these runners, so a stuck job fails with a clear timeout and frees its VM sooner.
 
 ## Credentials
 

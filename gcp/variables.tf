@@ -119,8 +119,8 @@ variable "idle_timeout_minutes" {
 
 variable "max_vm_lifetime_hours" {
   type        = number
-  description = "Compute Engine deletes any runner VM after this many hours. Keep it above the longest job timeout."
-  default     = 3
+  description = "Compute Engine deletes any runner VM after this many hours. The default matches GitHub's default job timeout (6 hours); jobs on these runners should set timeout-minutes below it."
+  default     = 6
 
   validation {
     condition     = var.max_vm_lifetime_hours >= 1 && var.max_vm_lifetime_hours <= 24
