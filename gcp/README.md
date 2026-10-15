@@ -33,7 +33,7 @@ Compute Engine also deletes every VM after `max_vm_lifetime_hours`, whatever hap
 
 VMs accept no inbound traffic: the network has no ingress firewall rules, so the implied deny-all rule applies.
 
-The controller's Compute Engine role has an IAM condition: for instances and disks, it applies only to names that start with `<prefix>-`. The internet-facing webhook cannot change or delete any other VM in the project.
+The controller has a custom Compute Engine role with only the permissions it calls: create, read and delete instances and disks, read the instance template and image, use the subnet, and read operations. It has no permission on instance groups. An IAM condition limits instances and disks to names that start with `<prefix>-`. The internet-facing webhook cannot change or delete any other VM in the project.
 
 ## Network
 

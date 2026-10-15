@@ -33,14 +33,41 @@ resource "google_service_account" "controller" {
   depends_on = [google_project_service.required]
 }
 
+# Only what the controller calls. A predefined role such as
+# roles/compute.instanceAdmin.v1 would also let it manage instance groups, whose
+# VMs the instance-group service agent creates outside the condition below.
+resource "google_project_iam_custom_role" "controller_compute" {
+  role_id     = "${replace(var.name_prefix, "-", "_")}_runner_controller"
+  title       = "GitHub runner controller (${var.name_prefix})"
+  description = "Creates and deletes the GitHub runner VMs of the ${var.name_prefix} stack."
+  permissions = [
+    "compute.disks.create",
+    "compute.disks.delete", # the boot disk is auto-deleted with its VM
+    "compute.images.useReadOnly",
+    "compute.instanceTemplates.get",
+    "compute.instanceTemplates.useReadOnly",
+    "compute.instances.create",
+    "compute.instances.delete",
+    "compute.instances.get",
+    "compute.instances.list",
+    "compute.instances.setLabels",
+    "compute.instances.setMetadata",
+    "compute.subnetworks.use",
+    "compute.subnetworks.useExternalIp",
+    "compute.zoneOperations.get",
+  ]
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_project_iam_member" "controller_compute" {
   project = var.project_id
-  role    = "roles/compute.instanceAdmin.v1"
+  role    = google_project_iam_custom_role.controller_compute.id
   member  = google_service_account.controller.member
 
   # For instances and disks, only the runner VMs (<prefix>-<job id>) and their
-  # boot disks, which share the VM's name. The other resources the controller
-  # uses (the template, the subnetwork, operations and project-level list
+  # boot disks, which share the VM's name. The other resources in the role
+  # (the template, the subnetwork, images, operations and project-level list
   # calls) are other types, so the first clause allows them.
   condition {
     title       = "${var.name_prefix} runner VMs only"
