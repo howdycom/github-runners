@@ -19,6 +19,8 @@ runner_group = "your-runner-group"
 # Repositories the reconcile job scans for queued jobs whose webhook was lost.
 # repositories = ["your-repo"]
 
+# runner_version        = "2.337.0"
+# runner_sha256         = "<sha256 from the release notes>"
 # runner_label          = "gcp-x64"
 # machine_type          = "n2d-standard-2"
 # disk_size_gb          = 75

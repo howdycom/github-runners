@@ -51,8 +51,9 @@ install_runner_host() {
     return
   fi
 
-  local version
+  local version sha256
   version="$(metadata runner-version)"
+  sha256="$(metadata runner-sha256)"
   log "installing docker and runner ${version}"
 
   export DEBIAN_FRONTEND=noninteractive
@@ -84,28 +85,26 @@ JSON
   echo "${RUNNER_USER} ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-runner
   chmod 0440 /etc/sudoers.d/90-runner
 
-  # Download the runner and check it against the SHA-256 that GitHub
-  # publishes in the release notes.
-  local tarball=/tmp/actions-runner.tar.gz
-  local expected_sha
-  expected_sha="$(curl -fsSL "https://api.github.com/repos/actions/runner/releases/tags/v${version}" \
-    | jq -r '.body' \
-    | sed -n 's/.*<!-- BEGIN SHA linux-x64 -->\([0-9a-f]\{64\}\)<!-- END SHA linux-x64 -->.*/\1/p')"
-  if [ -z "${expected_sha}" ]; then
-    log "no published checksum for runner ${version}"
-    false
-  fi
+  install_runner "${version}" "${sha256}"
+  touch "${INSTALLED_MARKER}"
+}
+
+# Downloads the runner and checks it against the pinned SHA-256 (Terraform
+# variable runner_sha256), so a boot makes no GitHub API call.
+install_runner() {
+  local version="$1"
+  local sha256="$2"
+  local tarball
+  tarball="$(mktemp)"
   curl -fsSL -o "${tarball}" \
     "https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-x64-${version}.tar.gz"
-  echo "${expected_sha}  ${tarball}" | sha256sum -c -
+  echo "${sha256}  ${tarball}" | sha256sum -c -
 
   mkdir -p "${RUNNER_DIR}"
   tar xzf "${tarball}" -C "${RUNNER_DIR}"
   rm -f "${tarball}"
   "${RUNNER_DIR}/bin/installdependencies.sh"
   chown -R "${RUNNER_USER}:${RUNNER_USER}" "${RUNNER_DIR}"
-
-  touch "${INSTALLED_MARKER}"
 }
 
 bake() {
@@ -134,8 +133,15 @@ run_one_job() {
   shutdown_now
 }
 
-if [ "$(metadata ghr-bake || true)" = "true" ]; then
-  bake
-else
-  run_one_job
+main() {
+  if [ "$(metadata ghr-bake || true)" = "true" ]; then
+    bake
+  else
+    run_one_job
+  fi
+}
+
+# runner/tests set GHR_SOURCE_ONLY to load the functions without running.
+if [ -z "${GHR_SOURCE_ONLY:-}" ]; then
+  main
 fi

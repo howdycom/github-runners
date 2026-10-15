@@ -6,8 +6,11 @@ runuser only record their calls. No root, network or Docker is needed.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import subprocess
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,7 +70,16 @@ class Harness:
         (self.metadata / key).write_text(value)
 
     def run(self, timeout: float = 30) -> subprocess.CompletedProcess[str]:
-        env = {
+        return subprocess.run(["bash", str(STARTUP)], env=self.env(), capture_output=True, text=True, timeout=timeout)
+
+    def call_function(self, command: str, timeout: float = 30) -> subprocess.CompletedProcess[str]:
+        """Sources startup.sh without running it, then runs one shell command."""
+        env = {**self.env(), "GHR_SOURCE_ONLY": "1"}
+        script = f'source "{STARTUP}"; {command}'
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=timeout)
+
+    def env(self) -> dict[str, str]:
+        return {
             "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}",
             "CALL_LOG": str(self.call_log),
             "FAKE_METADATA": str(self.metadata),
@@ -75,7 +87,6 @@ class Harness:
             "GHR_RUNNER_DIR": str(self.runner_dir),
             "GHR_INSTALLED_MARKER": str(self.marker),
         }
-        return subprocess.run(["bash", str(STARTUP)], env=env, capture_output=True, text=True, timeout=timeout)
 
     def calls(self) -> list[str]:
         return self.call_log.read_text().splitlines() if self.call_log.exists() else []
@@ -86,7 +97,7 @@ def harness(tmp_path: Path) -> Harness:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stubs = {"curl": CURL_STUB, "runuser": RUNUSER_STUB}
-    for name in ("systemctl", "apt-get"):
+    for name in ("systemctl", "apt-get", "chown"):
         stubs[name] = RECORDING_STUB
     for name, body in stubs.items():
         stub = bin_dir / name
@@ -121,3 +132,38 @@ def test_a_failed_metadata_read_in_a_substitution_stops_the_install(harness: Har
     assert "systemctl poweroff" in harness.calls()
     assert not any(call.startswith("apt-get") for call in harness.calls())
     assert not harness.marker.exists()
+
+
+def fake_runner_tarball() -> tuple[bytes, str]:
+    """A tarball shaped like the runner release, and its SHA-256."""
+    script = b"#!/bin/bash\ntouch \"$(dirname \"$0\")/../dependencies-installed\"\n"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("bin/installdependencies.sh")
+        info.size = len(script)
+        info.mode = 0o755
+        archive.addfile(info, io.BytesIO(script))
+    data = buffer.getvalue()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def test_installs_the_runner_when_the_checksum_matches(harness: Harness) -> None:
+    data, sha256 = fake_runner_tarball()
+    (harness.downloads / "actions-runner-linux-x64-2.337.0.tar.gz").write_bytes(data)
+
+    result = harness.call_function(f"install_runner 2.337.0 {sha256}")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (harness.runner_dir / "dependencies-installed").exists()
+    assert not any("api.github.com" in call for call in harness.calls())
+
+
+def test_refuses_a_runner_whose_checksum_does_not_match(harness: Harness) -> None:
+    data, _ = fake_runner_tarball()
+    (harness.downloads / "actions-runner-linux-x64-2.337.0.tar.gz").write_bytes(data)
+
+    result = harness.call_function(f"install_runner 2.337.0 {'0' * 64}")
+
+    assert "ghr: failed at line" in result.stdout
+    assert "systemctl poweroff" in harness.calls()
+    assert not (harness.runner_dir / "dependencies-installed").exists()

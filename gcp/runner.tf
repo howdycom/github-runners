@@ -38,6 +38,7 @@ resource "google_compute_instance_template" "runner" {
   metadata = {
     startup-script         = file("${path.module}/runner/startup.sh")
     runner-version         = var.runner_version
+    runner-sha256          = var.runner_sha256
     block-project-ssh-keys = "TRUE"
     enable-oslogin         = "TRUE"
   }

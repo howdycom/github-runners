@@ -86,7 +86,7 @@ Do not commit `backend.hcl` or `gcp.tfvars`. This repository is public.
 By default, VMs boot Ubuntu 24.04 and install Docker and the runner at boot (about two minutes). A prebuilt image cuts that to about a minute:
 
 ```bash
-./bake-image.sh <project> <zone> "$(terraform output -raw subnet)" <runner version>
+./bake-image.sh <project> <zone> "$(terraform output -raw subnet)" <runner_version> <runner_sha256>
 ```
 
 Then set `source_image = "projects/<project>/global/images/family/github-runner"` and apply. Re-run it monthly for OS and Docker updates.

@@ -67,6 +67,17 @@ variable "runner_version" {
   default     = "2.337.0"
 }
 
+variable "runner_sha256" {
+  type        = string
+  description = "SHA-256 of actions-runner-linux-x64-<runner_version>.tar.gz, from the runner's release notes. Change it together with runner_version."
+  default     = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.runner_sha256))
+    error_message = "Use the 64-character lowercase hex SHA-256."
+  }
+}
+
 variable "runner_label" {
   type        = string
   description = "Custom runner label. Workflows select these runners with runs-on: [self-hosted, <label>]."

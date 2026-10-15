@@ -2,15 +2,16 @@
 # Builds a runner VM image with Docker and the GitHub Actions runner
 # preinstalled, so runner VMs start in about a minute instead of three.
 #
-# Usage: ./bake-image.sh <project> <zone> <subnet> <runner-version> [image-family]
+# Usage: ./bake-image.sh <project> <zone> <subnet> <runner-version> <runner-sha256> [image-family]
 #   subnet: the `subnet` output of this stack
+#   runner-version, runner-sha256: the same values as the Terraform variables
 #
 # Then set source_image = "projects/<project>/global/images/family/<image-family>"
 # and run terraform apply. Re-run monthly to pick up OS and Docker updates.
 set -euo pipefail
 
-if [ "$#" -lt 4 ]; then
-  sed -n '2,10p' "$0"
+if [ "$#" -lt 5 ]; then
+  sed -n '2,11p' "$0"
   exit 1
 fi
 
@@ -18,7 +19,8 @@ PROJECT="$1"
 ZONE="$2"
 SUBNET="$3"
 RUNNER_VERSION="$4"
-FAMILY="${5:-github-runner}"
+RUNNER_SHA256="$5"
+FAMILY="${6:-github-runner}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BUILDER="${FAMILY}-bake-${STAMP}"
@@ -41,7 +43,7 @@ gcloud compute instances create "${BUILDER}" \
   --boot-disk-type=pd-balanced \
   --no-service-account \
   --no-scopes \
-  --metadata="ghr-bake=true,runner-version=${RUNNER_VERSION}" \
+  --metadata="ghr-bake=true,runner-version=${RUNNER_VERSION},runner-sha256=${RUNNER_SHA256}" \
   --metadata-from-file="startup-script=${SCRIPT_DIR}/runner/startup.sh"
 
 echo "Waiting for ${BUILDER} to install and power off..."
