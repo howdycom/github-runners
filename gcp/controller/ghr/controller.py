@@ -58,6 +58,7 @@ class GitHubPort(Protocol):
     def generate_jit_config(self, name: str, runner_group_id: int, labels: tuple[str, ...]) -> tuple[int, str]: ...
     def list_runners(self, name_prefix: str) -> list[dict[str, Any]]: ...
     def delete_runner(self, runner_id: int) -> bool: ...
+    def repository(self, name: str) -> dict[str, Any]: ...
     def queued_jobs(self, repository: str) -> list[dict[str, Any]]: ...
 
 
@@ -356,6 +357,10 @@ class Controller:
         missed = []
         for repository in self._config.repositories:
             try:
+                # The same rule as the webhook: never start a VM for a public repository.
+                if self._github.repository(repository).get("private") is not True:
+                    log.warning("skipped a public repository", repository=repository)
+                    continue
                 jobs = self._github.queued_jobs(repository)
             except Exception as exc:
                 log.error("could not list queued jobs", repository=repository, detail=str(exc))

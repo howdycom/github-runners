@@ -115,7 +115,7 @@ def test_generate_jit_config_name_taken(private_key: rsa.RSAPrivateKey) -> None:
         client.generate_jit_config("ghr-1", 7, ("gcp-x64",))
 
 
-@pytest.mark.parametrize(("status", "expected"), [(204, True), (404, True), (422, False)])
+@pytest.mark.parametrize(("status", "expected"), [(200, True), (204, True), (404, True), (422, False)])
 def test_delete_runner(private_key: rsa.RSAPrivateKey, status: int, expected: bool) -> None:
     client, _ = make_client(private_key, {("DELETE", "/orgs/example-org/actions/runners/5"): [FakeResponse(status)]})
     assert client.delete_runner(5) is expected
@@ -160,3 +160,8 @@ def test_queued_jobs_include_jobs_in_running_workflows(private_key: rsa.RSAPriva
         },
     )
     assert [j["id"] for j in client.queued_jobs("app")] == [10, 21]
+
+
+def test_repository(private_key: rsa.RSAPrivateKey) -> None:
+    client, _ = make_client(private_key, {("GET", "/repos/example-org/app"): [FakeResponse(200, {"name": "app", "private": True})]})
+    assert client.repository("app")["private"] is True

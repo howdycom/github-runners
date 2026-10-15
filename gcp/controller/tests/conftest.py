@@ -77,6 +77,7 @@ class FakeGitHub:
     group: dict[str, Any] = field(default_factory=lambda: {"id": 7, "name": "gcp-runners", "allows_public_repositories": False})
     runners: dict[str, dict[str, Any]] = field(default_factory=dict)
     jobs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    public_repositories: set[str] = field(default_factory=set)
     refuse_delete: set[int] = field(default_factory=set)
     next_id: int = 500
     jit_calls: list[tuple[str, int, tuple[str, ...]]] = field(default_factory=list)
@@ -102,6 +103,9 @@ class FakeGitHub:
         self.deleted.append(runner_id)
         self.runners = {n: r for n, r in self.runners.items() if r["id"] != runner_id}
         return True
+
+    def repository(self, name: str) -> dict[str, Any]:
+        return {"name": name, "private": name not in self.public_repositories}
 
     def queued_jobs(self, repository: str) -> list[dict[str, Any]]:
         return self.jobs.get(repository, [])

@@ -128,6 +128,11 @@ class GitHubClient:
         _raise_for_status(response, "delete runner")
         return True
 
+    def repository(self, name: str) -> dict[str, Any]:
+        response = self._app.request("GET", f"/repos/{self._org}/{name}")
+        _raise_for_status(response, "get repository")
+        return response.json()
+
     def queued_jobs(self, repository: str) -> list[dict[str, Any]]:
         """Queued jobs of one repository, including those in runs already in progress."""
         jobs: list[dict[str, Any]] = []

@@ -531,3 +531,11 @@ def test_start_results_serialize_as_their_values() -> None:
 
     assert json.dumps({"result": StartResult.AT_CAPACITY}) == '{"result": "at capacity"}'
     assert StartResult.CREATED not in STOP_STARTING and StartResult.EXISTS not in STOP_STARTING
+
+
+def test_reconcile_skips_jobs_from_a_public_repository(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {**missed(range(100, 101)), "open-source": missed(range(200, 201))["app"]}
+    github.public_repositories = {"open-source"}
+    summary = controller(github, compute, repositories=("open-source", "app")).reconcile()
+    assert summary["started"] == 1
+    assert [name for _, name, _ in compute.inserts] == ["ghr-100"]
