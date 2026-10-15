@@ -6,11 +6,12 @@ import hashlib
 import hmac
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime
 from typing import Any
 
 import jwt
 import requests
+
+from .timestamps import parse_timestamp
 
 API_URL = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -78,7 +79,7 @@ class GitHubApp:
         _raise_for_status(response, "create installation token")
         payload = response.json()
         self._token = payload["token"]
-        self._token_expires_at = _parse_timestamp(payload["expires_at"])
+        self._token_expires_at = parse_timestamp(payload["expires_at"])
         return self._token
 
     def request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
@@ -172,7 +173,3 @@ def _base_headers() -> dict[str, str]:
 def _raise_for_status(response: requests.Response, action: str) -> None:
     if response.status_code >= 400:
         raise GitHubError(f"{action} failed: HTTP {response.status_code}: {response.text[:300]}")
-
-
-def _parse_timestamp(value: str) -> float:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()

@@ -5,13 +5,14 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
 import google.auth
 import requests
 from google.auth.transport.requests import AuthorizedSession
+
+from .timestamps import parse_timestamp
 
 API_URL = "https://storage.googleapis.com/storage/v1"
 UPLOAD_URL = "https://storage.googleapis.com/upload/storage/v1"
@@ -88,7 +89,7 @@ class GcsLock:
         if response.status_code >= 400:
             raise LockError(f"read failed: HTTP {response.status_code}: {response.text[:300]}")
         metadata: dict[str, Any] = response.json()
-        created = datetime.fromisoformat(metadata["timeCreated"].replace("Z", "+00:00")).timestamp()
+        created = parse_timestamp(metadata["timeCreated"])
         if self._clock() - created < STALE_AFTER_SECONDS:
             return False
         self._delete(str(metadata["generation"]))

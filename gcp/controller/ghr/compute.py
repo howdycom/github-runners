@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime
 from typing import Any
 
 import google.auth
 import requests
 from google.auth.transport.requests import AuthorizedSession
+
+from .timestamps import parse_timestamp
 
 API_URL = "https://compute.googleapis.com/compute/v1"
 SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
@@ -162,7 +163,7 @@ def zone_of(instance: dict[str, Any]) -> str:
 
 
 def created_at(instance: dict[str, Any]) -> float:
-    return datetime.fromisoformat(instance["creationTimestamp"]).timestamp()
+    return parse_timestamp(instance["creationTimestamp"])
 
 
 def _raise_for_status(response: requests.Response, action: str) -> None:

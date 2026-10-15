@@ -8,7 +8,6 @@ import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
-from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -17,6 +16,7 @@ from .compute import ACTIVE_STATES, FINISHED_STATES, AlreadyExists, ZoneUnavaila
 from .config import Config
 from .github import RunnerNameTaken, verify_signature
 from .lock import LockTimeout
+from .timestamps import parse_timestamp
 
 # GitHub waits 10 seconds for a webhook response.
 WEBHOOK_DEADLINE_SECONDS = 8.0
@@ -338,7 +338,7 @@ class Controller:
                 break
             # The webhook made attempt 0. Each reconcile pass since then is one
             # more attempt, so retries move through the zones.
-            attempt = max(1, int((now - _timestamp(job["created_at"])) // RECONCILE_INTERVAL_SECONDS))
+            attempt = max(1, int((now - parse_timestamp(job["created_at"])) // RECONCILE_INTERVAL_SECONDS))
             try:
                 result = self.start_runner(int(job["id"]), self._monotonic() + RECONCILE_DEADLINE_SECONDS, attempt)
             except Exception as exc:
@@ -368,13 +368,9 @@ class Controller:
             for job in jobs:
                 if not wants_runner(self._config, job.get("labels", [])):
                     continue
-                if now - _timestamp(job["created_at"]) < QUEUE_GRACE_SECONDS:
+                if now - parse_timestamp(job["created_at"]) < QUEUE_GRACE_SECONDS:
                     continue
                 if self.vm_name(int(job["id"])) in vm_names:
                     continue
                 missed.append(job)
         return missed
-
-
-def _timestamp(value: str) -> float:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
