@@ -69,13 +69,11 @@ class Compute:
             return instance
         return None
 
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> bool:
-        """Creates a VM from the template and waits until it starts or the deadline passes.
+    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
+        """Sends the request that creates a VM from the template, and returns its operation.
 
-        Returns True when the VM started, False when the operation was still
-        running at the deadline. Raises AlreadyExists or ZoneUnavailable. A VM
-        that fails after the deadline does not exist; the reconcile job then
-        starts one for the still-queued job, in another zone.
+        Raises AlreadyExists. The VM is listed as soon as this returns, so the
+        caller's next count includes it. Pass the operation to wait().
         """
         properties = self._template(template)["properties"]
         items = {item["key"]: item["value"] for item in properties.get("metadata", {}).get("items", [])}
@@ -96,7 +94,7 @@ class Compute:
         if response.status_code == 409:
             raise AlreadyExists(name)
         _raise_for_status(response, f"create {name} in {zone}")
-        return self._wait(zone, response.json(), deadline)
+        return response.json()
 
     def delete(self, instance: dict[str, Any]) -> None:
         response = self._session.delete(
@@ -107,7 +105,14 @@ class Compute:
             return
         _raise_for_status(response, f"delete {instance['name']}")
 
-    def _wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool:
+    def wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool:
+        """Waits for a create operation until it finishes or the deadline (monotonic) passes.
+
+        Returns True when the VM started, False when the operation was still
+        running at the deadline. Raises ZoneUnavailable. A VM that fails after
+        the deadline does not exist; the reconcile job then starts one for the
+        still-queued job, in another zone.
+        """
         while True:
             if operation.get("status") == "DONE":
                 errors = operation.get("error", {}).get("errors", [])

@@ -101,7 +101,7 @@ Ubuntu 24.04 with Docker Engine, buildx and Compose, git, curl, jq, zip, zstd, P
 - **A zone without capacity.** The function tries the next zone. If every zone is full, the reconcile job retries.
 - **A runner that takes another job.** Any idle runner with the label can take any queued job. Every queued job still gets a VM, so the counts stay equal.
 - **Failures while creating a VM.** The function removes the runner registration it created, so no orphan runner is left behind.
-- **Limits.** The function stops creating VMs at `max_vms`; the reconcile job starts the rest when VMs free up. The limit is checked per request, so concurrent webhooks can briefly exceed it by a few VMs.
+- **Limits.** The function stops creating VMs at `max_vms`; the reconcile job starts the rest when VMs free up. Every function instance checks the count and sends the create request while holding one lock, an object in a GCS bucket, so concurrent webhooks cannot exceed the limit.
 - **Removing an idle runner.** Before deleting an idle VM, the controller removes its runner registration and deletes the VM only if GitHub accepts. A runner that takes a job in the same instant can still lose it; the job then fails and needs a re-run.
 
 ## Costs

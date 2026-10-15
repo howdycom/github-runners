@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ghr.compute import AlreadyExists, ZoneUnavailable  # noqa: E402
 from ghr.config import Config  # noqa: E402
 from ghr.github import RunnerNameTaken  # noqa: E402
+from ghr.lock import LockTimeout  # noqa: E402
 
 SECRET = b"webhook-secret"
 NOW = 1_800_000_000.0
@@ -34,6 +37,7 @@ def make_config(**overrides: Any) -> Config:
         "repositories": (),
         "max_vms": 5,
         "idle_timeout_seconds": 900,
+        "lock_bucket": "test-locks",
     }
     values.update(overrides)
     return Config(**values)
@@ -118,20 +122,44 @@ class FakeCompute:
     def find(self, name: str) -> dict[str, Any] | None:
         return self.instances.get(name)
 
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> bool:
+    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
         self.inserts.append((zone, name, metadata))
         if self.fail_insert:
             raise self.fail_insert
         if self.race_on_insert:
             raise AlreadyExists(name)
         if zone in self.full_zones:
-            raise ZoneUnavailable(zone)
+            # Compute Engine accepts the request; the operation fails later.
+            return {"zone": zone, "full": True}
         self.instances[name] = instance(name, "PROVISIONING", zone, age_seconds=0)
+        return {"zone": zone, "full": False}
+
+    def wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool:
+        if operation["full"]:
+            raise ZoneUnavailable(zone)
         return True
 
     def delete(self, inst: dict[str, Any]) -> None:
         self.deleted.append(inst["name"])
         self.instances.pop(inst["name"], None)
+
+
+@dataclass
+class FakeLock:
+    """Records how often the lock was held. on_acquire simulates other instances."""
+
+    times_held: int = 0
+    timeout: bool = False
+    on_acquire: Any = None
+
+    @contextmanager
+    def held(self, deadline: float) -> Iterator[None]:
+        if self.timeout:
+            raise LockTimeout("busy")
+        if self.on_acquire:
+            self.on_acquire()
+        self.times_held += 1
+        yield
 
 
 @pytest.fixture
@@ -142,3 +170,8 @@ def github() -> FakeGitHub:
 @pytest.fixture
 def compute() -> FakeCompute:
     return FakeCompute()
+
+
+@pytest.fixture
+def lock() -> FakeLock:
+    return FakeLock()

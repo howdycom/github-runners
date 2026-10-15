@@ -15,6 +15,7 @@ from ghr.compute import Compute
 from ghr.config import Config
 from ghr.controller import Controller
 from ghr.github import GitHubApp, GitHubClient
+from ghr.lock import GcsLock
 
 JSON_HEADERS = {"Content-Type": "application/json"}
 
@@ -23,7 +24,12 @@ JSON_HEADERS = {"Content-Type": "application/json"}
 def _controller() -> Controller:
     config = Config.from_env()
     app = GitHubApp(config.app_id, config.installation_id, os.environ["GITHUB_APP_PRIVATE_KEY"])
-    return Controller(config, GitHubClient(app, config.github_org), Compute(config.project, config.name_prefix))
+    return Controller(
+        config,
+        GitHubClient(app, config.github_org),
+        Compute(config.project, config.name_prefix),
+        GcsLock(config.lock_bucket, f"{config.name_prefix}/start-runner"),
+    )
 
 
 def _webhook_secret() -> bytes:

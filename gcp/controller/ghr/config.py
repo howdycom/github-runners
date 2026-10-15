@@ -29,6 +29,7 @@ class Config:
     repositories: tuple[str, ...]
     max_vms: int
     idle_timeout_seconds: int
+    lock_bucket: str
 
     @property
     def runner_labels(self) -> tuple[str, ...]:
@@ -52,4 +53,5 @@ class Config:
             repositories=_split(env.get("REPOSITORIES", "")),
             max_vms=int(env["MAX_VMS"]),
             idle_timeout_seconds=int(env["IDLE_TIMEOUT_SECONDS"]),
+            lock_bucket=env["LOCK_BUCKET"],
         )

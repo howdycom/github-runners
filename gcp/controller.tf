@@ -12,6 +12,7 @@ locals {
     REPOSITORIES           = join(",", var.repositories)
     MAX_VMS                = tostring(var.max_vms)
     IDLE_TIMEOUT_SECONDS   = tostring(var.idle_timeout_minutes * 60)
+    LOCK_BUCKET            = google_storage_bucket.locks.name
   }
 
   controller_secrets = {
@@ -44,6 +45,24 @@ resource "google_secret_manager_secret_iam_member" "controller" {
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = google_service_account.controller.member
+}
+
+# Holds the lock object that function instances take between checking the
+# VM count and creating a VM, so concurrent webhooks cannot exceed max_vms.
+resource "google_storage_bucket" "locks" {
+  name                        = "${var.project_id}-${var.name_prefix}-locks"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = true
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket_iam_member" "controller_locks" {
+  bucket = google_storage_bucket.locks.name
+  role   = "roles/storage.objectUser"
+  member = google_service_account.controller.member
 }
 
 # Builds the function source. A dedicated account avoids depending on the
@@ -160,6 +179,7 @@ resource "google_cloudfunctions2_function" "webhook" {
     google_project_iam_member.build,
     google_storage_bucket_iam_member.build_source,
     google_secret_manager_secret_iam_member.controller,
+    google_storage_bucket_iam_member.controller_locks,
   ]
 }
 
@@ -214,6 +234,7 @@ resource "google_cloudfunctions2_function" "reconcile" {
     google_project_iam_member.build,
     google_storage_bucket_iam_member.build_source,
     google_secret_manager_secret_iam_member.controller,
+    google_storage_bucket_iam_member.controller_locks,
   ]
 }
 

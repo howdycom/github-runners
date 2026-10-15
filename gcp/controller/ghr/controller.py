@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -12,6 +13,7 @@ from . import log
 from .compute import ACTIVE_STATES, FINISHED_STATES, AlreadyExists, ZoneUnavailable, created_at
 from .config import Config
 from .github import RunnerNameTaken, verify_signature
+from .lock import LockTimeout
 
 # GitHub waits 10 seconds for a webhook response.
 WEBHOOK_DEADLINE_SECONDS = 8.0
@@ -42,8 +44,13 @@ class GitHubPort(Protocol):
 class ComputePort(Protocol):
     def list_instances(self) -> list[dict[str, Any]]: ...
     def find(self, name: str) -> dict[str, Any] | None: ...
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str], deadline: float) -> bool: ...
+    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]: ...
+    def wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool: ...
     def delete(self, instance: dict[str, Any]) -> None: ...
+
+
+class LockPort(Protocol):
+    def held(self, deadline: float) -> AbstractContextManager[None]: ...
 
 
 def wants_runner(config: Config, job_labels: Iterable[str]) -> bool:
@@ -64,12 +71,14 @@ class Controller:
         config: Config,
         github: GitHubPort,
         compute: ComputePort,
+        lock: LockPort,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = config
         self._github = github
         self._compute = compute
+        self._lock = lock
         self._clock = clock
         self._monotonic = monotonic
         self._group_id: int | None = None
@@ -139,43 +148,63 @@ class Controller:
         capacity failure does not start in the same zone again.
         """
         name = self.vm_name(job_id)
-        if self._compute.find(name):
-            return "exists"
-
-        active = [i for i in self._compute.list_instances() if i["status"] in ACTIVE_STATES]
-        if len(active) >= self._config.max_vms:
-            log.warning("at max_vms; the job waits for the next reconcile pass", job_id=job_id, max_vms=self._config.max_vms)
-            return "at capacity"
+        # Cheap checks first, so duplicates and a full pool cost no GitHub call.
+        blocked = self._blocked(name, job_id)
+        if blocked:
+            return blocked
 
         runner_id, jit_config = self._register_runner(name)
         try:
-            for zone in zone_order(self._config.zones, job_id, attempt):
-                try:
-                    started = self._compute.insert(
-                        zone, name, self._config.instance_template, {"jit-config": jit_config}, deadline
-                    )
-                except ZoneUnavailable as exc:
-                    log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
-                    continue
-                except AlreadyExists:
-                    # Another request created this VM first; it has its own runner.
-                    self._github.delete_runner(runner_id)
-                    return "exists"
-                if started:
-                    log.info("created runner vm", vm=name, zone=zone, job_id=job_id)
-                else:
-                    log.info(
-                        "runner vm still starting at the deadline; reconcile retries in another zone if it fails",
-                        vm=name,
-                        zone=zone,
-                        job_id=job_id,
-                    )
-                return "created"
+            result = self._create_vm(job_id, name, jit_config, deadline, attempt)
         except Exception:
             self._github.delete_runner(runner_id)
             raise
+        if result != "created":
+            self._github.delete_runner(runner_id)
+        return result
 
-        self._github.delete_runner(runner_id)
+    def _blocked(self, name: str, job_id: int) -> str | None:
+        """Why no VM may be created for this job now, or None."""
+        instances = self._compute.list_instances()
+        if any(instance["name"] == name for instance in instances):
+            return "exists"
+        if sum(1 for instance in instances if instance["status"] in ACTIVE_STATES) >= self._config.max_vms:
+            log.warning("at max_vms; the job waits for the next reconcile pass", job_id=job_id, max_vms=self._config.max_vms)
+            return "at capacity"
+        return None
+
+    def _create_vm(self, job_id: int, name: str, jit_config: str, deadline: float, attempt: int) -> str:
+        for zone in zone_order(self._config.zones, job_id, attempt):
+            try:
+                # Every function instance takes this lock between its check and
+                # its insert, so two requests cannot both pass the check.
+                with self._lock.held(deadline):
+                    blocked = self._blocked(name, job_id)
+                    if blocked:
+                        return blocked
+                    operation = self._compute.insert(zone, name, self._config.instance_template, {"jit-config": jit_config})
+            except LockTimeout:
+                log.warning("start lock busy; the job waits for the next reconcile pass", vm=name, job_id=job_id)
+                return "busy"
+            except AlreadyExists:
+                return "exists"
+
+            try:
+                started = self._compute.wait(zone, operation, deadline)
+            except ZoneUnavailable as exc:
+                log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
+                continue
+            if started:
+                log.info("created runner vm", vm=name, zone=zone, job_id=job_id)
+            else:
+                log.info(
+                    "runner vm still starting at the deadline; reconcile retries in another zone if it fails",
+                    vm=name,
+                    zone=zone,
+                    job_id=job_id,
+                )
+            return "created"
+
         log.error("no zone had capacity; the job waits for the next reconcile pass", vm=name, zones=self._config.zones)
         return "no capacity"
 
@@ -274,7 +303,7 @@ class Controller:
                 continue
             if result == "created":
                 summary["started"] += 1
-            elif result in ("at capacity", "no capacity"):
+            elif result in ("at capacity", "no capacity", "busy"):
                 break
 
         log.info("reconcile pass", **summary)

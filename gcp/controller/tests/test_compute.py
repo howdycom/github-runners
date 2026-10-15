@@ -65,7 +65,7 @@ def make_compute(session: FakeSession, clock: list[float] | None = None) -> Comp
 
 def test_insert_sends_template_metadata_plus_the_jit_config() -> None:
     session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]})
-    make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {"jit-config": "abc"}, deadline=10)
+    make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {"jit-config": "abc"})
 
     method, url, kwargs = next(c for c in session.calls if c[0] == "POST")
     assert url == f"{API}/projects/p/zones/zone-a/instances"
@@ -78,7 +78,7 @@ def test_insert_sends_template_metadata_plus_the_jit_config() -> None:
 def test_insert_already_exists() -> None:
     session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]}, post_response=FakeResponse(409))
     with pytest.raises(AlreadyExists):
-        make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10)
+        make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {})
 
 
 def test_insert_reports_a_zone_without_capacity() -> None:
@@ -90,8 +90,10 @@ def test_insert_reports_a_zone_without_capacity() -> None:
         },
         post_response=FakeResponse(200, {"name": "op-1", "status": "RUNNING"}),
     )
+    compute = make_compute(session)
+    operation = compute.insert("zone-a", "ghr-1", TEMPLATE, {})
     with pytest.raises(ZoneUnavailable):
-        make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10)
+        compute.wait("zone-a", operation, deadline=10)
 
 
 def test_insert_raises_other_operation_errors() -> None:
@@ -99,14 +101,17 @@ def test_insert_raises_other_operation_errors() -> None:
         get_responses={f"{API}/{TEMPLATE}": [template_response()]},
         post_response=FakeResponse(200, {"name": "op-1", "status": "DONE", "error": {"errors": [{"code": "QUOTA_EXCEEDED"}]}}),
     )
+    compute = make_compute(session)
+    operation = compute.insert("zone-a", "ghr-1", TEMPLATE, {})
     with pytest.raises(ComputeError) as exc:
-        make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10)
+        compute.wait("zone-a", operation, deadline=10)
     assert not isinstance(exc.value, ZoneUnavailable)
 
 
 def test_insert_reports_a_started_vm() -> None:
     session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]})
-    assert make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10) is True
+    compute = make_compute(session)
+    assert compute.wait("zone-a", compute.insert("zone-a", "ghr-1", TEMPLATE, {}), deadline=10) is True
 
 
 def test_insert_returns_when_the_deadline_passes() -> None:
@@ -115,15 +120,16 @@ def test_insert_returns_when_the_deadline_passes() -> None:
         get_responses={f"{API}/{TEMPLATE}": [template_response()], op_url: [FakeResponse(200, {"name": "op-1", "status": "RUNNING"})]},
         post_response=FakeResponse(200, {"name": "op-1", "status": "RUNNING"}),
     )
-    assert make_compute(session).insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=3) is False
+    compute = make_compute(session)
+    assert compute.wait("zone-a", compute.insert("zone-a", "ghr-1", TEMPLATE, {}), deadline=3) is False
     assert sum(1 for c in session.calls if c[1] == op_url) == 3
 
 
 def test_template_is_fetched_once() -> None:
     session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]})
     compute = make_compute(session)
-    compute.insert("zone-a", "ghr-1", TEMPLATE, {}, deadline=10)
-    compute.insert("zone-a", "ghr-2", TEMPLATE, {}, deadline=10)
+    compute.insert("zone-a", "ghr-1", TEMPLATE, {})
+    compute.insert("zone-a", "ghr-2", TEMPLATE, {})
     assert sum(1 for c in session.calls if c[1].endswith(TEMPLATE)) == 1
 
 
