@@ -138,13 +138,8 @@ class GitHubClient:
         """Queued jobs of one repository, including those in runs already in progress."""
         jobs: list[dict[str, Any]] = []
         for status in ("queued", "in_progress"):
-            response = self._app.request(
-                "GET",
-                f"/repos/{self._org}/{repository}/actions/runs",
-                params={"status": status, "per_page": PAGE_SIZE},
-            )
-            _raise_for_status(response, "list workflow runs")
-            for run in response.json()["workflow_runs"]:
+            runs = self._paginate(f"/repos/{self._org}/{repository}/actions/runs", "workflow_runs", {"status": status})
+            for run in runs:
                 for job in self._paginate(
                     f"/repos/{self._org}/{repository}/actions/runs/{run['id']}/jobs",
                     "jobs",

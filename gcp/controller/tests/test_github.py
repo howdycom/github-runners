@@ -165,3 +165,22 @@ def test_queued_jobs_include_jobs_in_running_workflows(private_key: rsa.RSAPriva
 def test_repository(private_key: rsa.RSAPrivateKey) -> None:
     client, _ = make_client(private_key, {("GET", "/repos/example-org/app"): [FakeResponse(200, {"name": "app", "private": True})]})
     assert client.repository("app")["private"] is True
+
+
+def test_queued_jobs_read_every_page_of_runs(private_key: rsa.RSAPrivateKey) -> None:
+    first_page = [{"id": i} for i in range(1, 101)]
+    responses: dict[tuple[str, str], list[FakeResponse]] = {
+        ("GET", "/repos/example-org/app/actions/runs"): [
+            FakeResponse(200, {"workflow_runs": first_page}),  # queued, page 1
+            FakeResponse(200, {"workflow_runs": [{"id": 101}]}),  # queued, page 2
+            FakeResponse(200, {"workflow_runs": []}),  # in_progress
+        ],
+    }
+    for run_id in range(1, 102):
+        jobs = [{"id": 9000 + run_id, "status": "queued"}] if run_id == 101 else []
+        responses[("GET", f"/repos/example-org/app/actions/runs/{run_id}/jobs")] = [FakeResponse(200, {"jobs": jobs})]
+    client, session = make_client(private_key, responses)
+
+    assert [j["id"] for j in client.queued_jobs("app")] == [9101]
+    run_pages = [c[2]["params"] for c in session.calls if c[1].endswith("/actions/runs")]
+    assert [(p["status"], p["page"]) for p in run_pages] == [("queued", 1), ("queued", 2), ("in_progress", 1)]
