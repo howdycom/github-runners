@@ -69,8 +69,25 @@ The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted ru
 
 ## Deploy
 
+First build the VM image. Runner VMs boot from the newest image in the `github-runner` family, with Docker and the runner already installed. Use the same `runner_version` and `runner_sha256` as in your tfvars:
+
 ```bash
 cd gcp
+./bake-image.sh <project> <zone> <runner_version> <runner_sha256>
+```
+
+The script builds the image in a temporary network with a public IP, then deletes the network. If an organization policy forbids external IPs, apply the network first with `use_cloud_nat = true`, then pass the stack's subnet as the fifth argument:
+
+```bash
+terraform apply -var-file=gcp.tfvars -target=google_compute_router_nat.runners
+./bake-image.sh <project> <zone> <runner_version> <runner_sha256> "$(terraform output -raw subnet)"
+```
+
+Re-run `bake-image.sh` monthly for OS and Docker updates. New VMs use the new image at once.
+
+Then deploy the stack:
+
+```bash
 cp backend.hcl.example backend.hcl     # gitignored
 cp gcp.tfvars.example gcp.tfvars       # gitignored
 # Fill in both files.
@@ -88,16 +105,6 @@ jobs:
 ```
 
 Do not commit `backend.hcl` or `gcp.tfvars`. This repository is public.
-
-## Faster boot with a prebuilt image
-
-By default, VMs boot Ubuntu 24.04 and install Docker and the runner at boot (about two minutes). A prebuilt image cuts that to about a minute:
-
-```bash
-./bake-image.sh <project> <zone> "$(terraform output -raw subnet)" <runner_version> <runner_sha256>
-```
-
-Then set `source_image = "projects/<project>/global/images/family/github-runner"` and apply. Re-run it monthly for OS and Docker updates.
 
 ## What a VM provides
 

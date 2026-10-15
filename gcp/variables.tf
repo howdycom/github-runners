@@ -57,8 +57,8 @@ variable "disk_size_gb" {
 
 variable "source_image" {
   type        = string
-  description = "Boot image for runner VMs. Defaults to Ubuntu 24.04, which installs Docker and the runner at boot. Set it to the image family built by bake-image.sh so VMs start with them preinstalled."
-  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+  description = "Boot image for runner VMs. Defaults to the github-runner image family in var.project_id, built by bake-image.sh with Docker and the runner preinstalled. Build it before the first apply."
+  default     = null
 }
 
 variable "runner_version" {

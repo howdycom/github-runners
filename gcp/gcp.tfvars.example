@@ -27,5 +27,5 @@ runner_group = "your-runner-group"
 # max_vms               = 20
 # idle_timeout_minutes  = 15
 # max_vm_lifetime_hours = 3
-# source_image          = "projects/your-ci-project/global/images/family/github-runner"
+# source_image          = "projects/your-ci-project/global/images/family/github-runner"  # the default
 # use_cloud_nat         = false

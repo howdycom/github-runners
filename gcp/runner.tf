@@ -1,4 +1,7 @@
 locals {
+  # The image bake-image.sh builds, unless var.source_image overrides it.
+  source_image = coalesce(var.source_image, "projects/${var.project_id}/global/images/family/github-runner")
+
   # The controller filters on these labels, so it only ever touches its own VMs.
   runner_vm_labels = {
     ghr_managed = "true"
@@ -17,7 +20,7 @@ resource "google_compute_instance_template" "runner" {
   disk {
     boot         = true
     auto_delete  = true
-    source_image = var.source_image
+    source_image = local.source_image
     disk_type    = "pd-balanced"
     disk_size_gb = var.disk_size_gb
   }
