@@ -30,9 +30,14 @@ RECONCILE_MAX_STARTS = 10
 # Cloud Scheduler runs the reconcile job this often (controller.tf).
 RECONCILE_INTERVAL_SECONDS = 120
 RUNNER_GROUP_CACHE_SECONDS = 600
-# Each runner registration gets a random suffix after its VM's name, so two
-# attempts for one job never share a runner name.
-RUNNER_SUFFIX_BYTES = 3
+# Each runner registration is named <vm>-<suffix>. The suffix is the
+# registration time (8 hex digits of Unix seconds) plus 4 random hex digits, so
+# two attempts for one job never share a name, and reconcile can tell how old
+# a registration is. GitHub does not report that itself.
+RUNNER_RANDOM_BYTES = 2
+# A runner registered this recently may still be waiting for its VM: the
+# webhook registers it before it takes the lock and creates the VM.
+ORPHAN_GRACE_SECONDS = 300
 
 
 class UnsafeRunnerGroup(Exception):
@@ -95,7 +100,7 @@ class Controller:
         lock: LockPort,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
-        runner_suffix: Callable[[], str] = lambda: secrets.token_hex(RUNNER_SUFFIX_BYTES),
+        runner_suffix: Callable[[], str] | None = None,
     ) -> None:
         self._config = config
         self._github = github
@@ -103,13 +108,18 @@ class Controller:
         self._lock = lock
         self._clock = clock
         self._monotonic = monotonic
-        self._runner_suffix = runner_suffix
-        self._runner_name = re.compile(rf"^({re.escape(config.name_prefix)}-.+)-[0-9a-f]{{{RUNNER_SUFFIX_BYTES * 2}}}$")
+        self._runner_suffix = runner_suffix or self._new_runner_suffix
+        self._runner_name = re.compile(
+            rf"^({re.escape(config.name_prefix)}-.+)-([0-9a-f]{{8}})[0-9a-f]{{{RUNNER_RANDOM_BYTES * 2}}}$"
+        )
         self._group_id: int | None = None
         self._group_checked_at = 0.0
 
     def vm_name(self, job_id: int) -> str:
         return f"{self._config.name_prefix}-{job_id}"
+
+    def _new_runner_suffix(self) -> str:
+        return f"{int(self._clock()):08x}{secrets.token_hex(RUNNER_RANDOM_BYTES)}"
 
     def _vm_of_runner(self, runner_name: str) -> str | None:
         """The VM a runner registration belongs to, or None if it is not ours."""
@@ -117,11 +127,12 @@ class Controller:
         return match.group(1) if match else None
 
     def _runners_by_vm(self, runners: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """Our runners grouped by VM, each with registered_at (Unix seconds) from its name."""
         by_vm: dict[str, list[dict[str, Any]]] = {}
         for runner in runners:
-            vm = self._vm_of_runner(runner["name"])
-            if vm:
-                by_vm.setdefault(vm, []).append(runner)
+            match = self._runner_name.match(runner["name"])
+            if match:
+                by_vm.setdefault(match.group(1), []).append({**runner, "registered_at": int(match.group(2), 16)})
         return by_vm
 
     # --- Webhook --------------------------------------------------------------
@@ -324,6 +335,8 @@ class Controller:
                 continue
             for runner in vm_runners:
                 if runner["busy"] or runner["status"] != "offline":
+                    continue
+                if now - runner["registered_at"] < ORPHAN_GRACE_SECONDS:
                     continue
                 try:
                     # Check again: the webhook may have just created this VM.

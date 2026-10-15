@@ -10,9 +10,17 @@ from ghr.compute import ComputeError
 from ghr.controller import Controller, UnsafeRunnerGroup, wants_runner, zone_order
 
 
+# Runner name suffixes: registration time in 8 hex digits, then 4 random ones.
+OLD = f"{int(NOW) - 3600:08x}abcd"  # registered an hour ago
+
+
+def new_suffix(n: int) -> str:
+    return f"{int(NOW):08x}{n:04x}"
+
+
 def suffixes() -> object:
     counter = itertools.count(1)
-    return lambda: f"{next(counter):06x}"
+    return lambda: new_suffix(next(counter))
 
 
 def controller(github: FakeGitHub, compute: FakeCompute, lock: FakeLock | None = None, **config: object) -> Controller:
@@ -27,7 +35,7 @@ def controller(github: FakeGitHub, compute: FakeCompute, lock: FakeLock | None =
     )
 
 
-def runner(vm: str, runner_id: int, busy: bool = False, status: str = "online", suffix: str = "abcdef") -> dict[str, object]:
+def runner(vm: str, runner_id: int, busy: bool = False, status: str = "online", suffix: str = OLD) -> dict[str, object]:
     return {"id": runner_id, "name": f"{vm}-{suffix}", "busy": busy, "status": status}
 
 
@@ -148,9 +156,9 @@ def test_queued_job_creates_one_vm_with_a_jit_config(github: FakeGitHub, compute
     status, response = controller(github, compute).handle_webhook(headers, body, SECRET)
 
     assert (status, response) == (200, {"result": "created"})
-    assert github.jit_calls == [("ghr-1001-000001", 7, ("self-hosted", "linux", "x64", "gcp-x64"))]
+    assert github.jit_calls == [(f"ghr-1001-{new_suffix(1)}", 7, ("self-hosted", "linux", "x64", "gcp-x64"))]
     zone, name, metadata = compute.inserts[0]
-    assert (name, metadata) == ("ghr-1001", {"jit-config": "jit-ghr-1001-000001"})
+    assert (name, metadata) == ("ghr-1001", {"jit-config": f"jit-ghr-1001-{new_suffix(1)}"})
     assert zone == zone_order(("zone-a", "zone-b", "zone-c"), 1001)[0]
 
 
@@ -218,11 +226,11 @@ def test_refuses_a_runner_group_open_to_public_repositories(github: FakeGitHub, 
 
 
 def test_a_runner_name_collision_registers_under_a_new_name(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.runners["ghr-1001-000001"] = runner("ghr-1001", 1, busy=True, suffix="000001")
+    github.runners[f"ghr-1001-{new_suffix(1)}"] = runner("ghr-1001", 1, busy=True, suffix=new_suffix(1))
     _, response = controller(github, compute).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
     assert response == {"result": "created"}
     assert github.deleted == []  # the existing runner is left alone
-    assert compute.inserts[0][2] == {"jit-config": "jit-ghr-1001-000002"}
+    assert compute.inserts[0][2] == {"jit-config": f"jit-ghr-1001-{new_suffix(2)}"}
 
 
 def test_registering_never_deletes_a_runner_another_request_registered(github: FakeGitHub, compute: FakeCompute) -> None:
@@ -254,7 +262,7 @@ def test_concurrent_requests_for_one_job_keep_the_winners_runner(github: FakeGit
 def test_completed_job_deletes_its_vm(github: FakeGitHub, compute: FakeCompute) -> None:
     compute.instances["ghr-2002"] = instance("ghr-2002")
     _, response = controller(github, compute).handle_webhook(
-        *webhook_request("completed", job(1001, runner_name="ghr-2002-abcdef")), SECRET
+        *webhook_request("completed", job(1001, runner_name=f"ghr-2002-{OLD}")), SECRET
     )
     assert response == {"result": "deleted"}
     assert compute.deleted == ["ghr-2002"]
@@ -270,8 +278,8 @@ def test_completed_job_on_another_runner_is_ignored(github: FakeGitHub, compute:
 
 def test_job_cancelled_while_queued_retires_its_idle_vm(github: FakeGitHub, compute: FakeCompute) -> None:
     compute.instances["ghr-1001"] = instance("ghr-1001")
-    github.runners["ghr-1001-abcdef"] = runner("ghr-1001", 9)
-    github.runners["ghr-10010-abcdef"] = runner("ghr-10010", 10, busy=True)  # another VM's runner
+    github.runners[f"ghr-1001-{OLD}"] = runner("ghr-1001", 9)
+    github.runners[f"ghr-10010-{OLD}"] = runner("ghr-10010", 10, busy=True)  # another VM's runner
     _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001)), SECRET)
     assert response == {"result": "deleted"}
     assert github.deleted == [9] and compute.deleted == ["ghr-1001"]
@@ -279,7 +287,7 @@ def test_job_cancelled_while_queued_retires_its_idle_vm(github: FakeGitHub, comp
 
 def test_job_cancelled_while_queued_keeps_a_vm_that_took_another_job(github: FakeGitHub, compute: FakeCompute) -> None:
     compute.instances["ghr-1001"] = instance("ghr-1001")
-    github.runners["ghr-1001-abcdef"] = runner("ghr-1001", 9, busy=True)
+    github.runners[f"ghr-1001-{OLD}"] = runner("ghr-1001", 9, busy=True)
     _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001)), SECRET)
     assert response == {"result": "busy"}
     assert compute.deleted == []
@@ -287,7 +295,7 @@ def test_job_cancelled_while_queued_keeps_a_vm_that_took_another_job(github: Fak
 
 def test_job_cancelled_while_queued_keeps_vm_when_github_refuses_removal(github: FakeGitHub, compute: FakeCompute) -> None:
     compute.instances["ghr-1001"] = instance("ghr-1001")
-    github.runners["ghr-1001-abcdef"] = runner("ghr-1001", 9)
+    github.runners[f"ghr-1001-{OLD}"] = runner("ghr-1001", 9)
     github.refuse_delete = {9}
     _, response = controller(github, compute).handle_webhook(*webhook_request("completed", job(1001)), SECRET)
     assert response == {"result": "busy"} and compute.deleted == []
@@ -308,8 +316,8 @@ def test_reconcile_keeps_busy_and_young_vms(github: FakeGitHub, compute: FakeCom
         "ghr-young": instance("ghr-young", age_seconds=60),
     }
     github.runners = {
-        "ghr-busy-abcdef": runner("ghr-busy", 1, busy=True),
-        "ghr-young-abcdef": runner("ghr-young", 2, status="offline"),
+        f"ghr-busy-{OLD}": runner("ghr-busy", 1, busy=True),
+        f"ghr-young-{OLD}": runner("ghr-young", 2, status="offline"),
     }
     summary = controller(github, compute).reconcile()
     assert compute.deleted == [] and github.deleted == [] and summary["errors"] == 0
@@ -317,7 +325,7 @@ def test_reconcile_keeps_busy_and_young_vms(github: FakeGitHub, compute: FakeCom
 
 def test_reconcile_retires_idle_vms(github: FakeGitHub, compute: FakeCompute) -> None:
     compute.instances = {"ghr-idle": instance("ghr-idle", age_seconds=1000), "ghr-gone": instance("ghr-gone", age_seconds=1000)}
-    github.runners = {"ghr-idle-abcdef": runner("ghr-idle", 1)}
+    github.runners = {f"ghr-idle-{OLD}": runner("ghr-idle", 1)}
     summary = controller(github, compute).reconcile()
     assert summary["idle"] == 2
     assert sorted(compute.deleted) == ["ghr-gone", "ghr-idle"] and github.deleted == [1]
@@ -325,8 +333,8 @@ def test_reconcile_retires_idle_vms(github: FakeGitHub, compute: FakeCompute) ->
 
 def test_reconcile_deletes_orphan_runner_registrations(github: FakeGitHub, compute: FakeCompute) -> None:
     github.runners = {
-        "ghr-orphan-abcdef": runner("ghr-orphan", 1, status="offline"),
-        "ghr-online-abcdef": runner("ghr-online", 2),
+        f"ghr-orphan-{OLD}": runner("ghr-orphan", 1, status="offline"),
+        f"ghr-online-{OLD}": runner("ghr-online", 2),
         "unrelated-runner": {"id": 3, "name": "ghr-box", "busy": False, "status": "offline"},
     }
     summary = controller(github, compute).reconcile()
@@ -385,7 +393,7 @@ def test_ignores_other_actions(github: FakeGitHub, compute: FakeCompute) -> None
 
 def test_completed_job_whose_vm_is_already_gone(github: FakeGitHub, compute: FakeCompute) -> None:
     _, response = controller(github, compute).handle_webhook(
-        *webhook_request("completed", job(1001, runner_name="ghr-1001-abcdef")), SECRET
+        *webhook_request("completed", job(1001, runner_name=f"ghr-1001-{OLD}")), SECRET
     )
     assert response == {"result": "already gone"}
 
@@ -412,7 +420,7 @@ def test_runner_group_is_looked_up_once_per_cache_period(github: FakeGitHub, com
 
 
 def test_reconcile_keeps_a_runner_whose_vm_just_appeared(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.runners = {"ghr-new-abcdef": runner("ghr-new", 1, status="offline")}
+    github.runners = {f"ghr-new-{OLD}": runner("ghr-new", 1, status="offline")}
     ctrl = controller(github, compute)
     original_list = compute.list_instances
     compute.list_instances = lambda: []  # type: ignore[method-assign]
@@ -423,7 +431,7 @@ def test_reconcile_keeps_a_runner_whose_vm_just_appeared(github: FakeGitHub, com
 
 
 def test_reconcile_counts_errors_while_removing_orphan_runners(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.runners = {"ghr-orphan-abcdef": runner("ghr-orphan", 1, status="offline")}
+    github.runners = {f"ghr-orphan-{OLD}": runner("ghr-orphan", 1, status="offline")}
 
     def failing_delete(runner_id: int) -> bool:
         raise RuntimeError("github down")
@@ -539,3 +547,22 @@ def test_reconcile_skips_jobs_from_a_public_repository(github: FakeGitHub, compu
     summary = controller(github, compute, repositories=("open-source", "app")).reconcile()
     assert summary["started"] == 1
     assert [name for _, name, _ in compute.inserts] == ["ghr-100"]
+
+
+def test_reconcile_keeps_a_fresh_runner_still_waiting_for_its_vm(github: FakeGitHub, compute: FakeCompute) -> None:
+    # The webhook registered this runner seconds ago and has not created the
+    # VM yet; deleting it would leave that VM with a revoked config.
+    fresh = new_suffix(1)
+    github.runners = {
+        f"ghr-1001-{fresh}": runner("ghr-1001", 1, status="offline", suffix=fresh),
+        f"ghr-1002-{OLD}": runner("ghr-1002", 2, status="offline"),
+    }
+    summary = controller(github, compute).reconcile()
+    assert summary["orphan_runners"] == 1 and github.deleted == [2]
+
+
+def test_new_runner_names_carry_the_registration_time(github: FakeGitHub, compute: FakeCompute) -> None:
+    ctrl = Controller(make_config(), github, compute, FakeLock(), clock=lambda: NOW, monotonic=lambda: 0.0)
+    ctrl.start_runner(1001, deadline=5)
+    name = github.jit_calls[0][0]
+    assert name.startswith(f"ghr-1001-{int(NOW):08x}") and len(name.rsplit("-", 1)[1]) == 12
