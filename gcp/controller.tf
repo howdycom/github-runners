@@ -17,7 +17,7 @@ locals {
 
   controller_secrets = {
     GITHUB_APP_PRIVATE_KEY = var.github_app_private_key_secret
-    GITHUB_WEBHOOK_SECRET  = var.github_webhook_secret_secret
+    GITHUB_WEBHOOK_SECRET  = var.github_webhook_secret_id
   }
 }
 

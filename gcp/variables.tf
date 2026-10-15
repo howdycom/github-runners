@@ -137,7 +137,7 @@ variable "github_app_private_key_secret" {
   description = "Secret Manager secret ID (in var.project_id) holding the GitHub App private key (PEM)."
 }
 
-variable "github_webhook_secret_secret" {
+variable "github_webhook_secret_id" {
   type        = string
   description = "Secret Manager secret ID (in var.project_id) holding the GitHub App webhook secret."
 }

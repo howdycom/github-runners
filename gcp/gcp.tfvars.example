@@ -11,7 +11,7 @@ github_app_installation_id = "12345678"
 
 # Secret Manager secret IDs in project_id.
 github_app_private_key_secret = "github-runners-app-key"
-github_webhook_secret_secret  = "github-runners-webhook-secret"
+github_webhook_secret_id      = "github-runners-webhook-secret"
 
 # A runner group that public repositories cannot use.
 runner_group = "your-runner-group"
