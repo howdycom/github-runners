@@ -16,12 +16,12 @@ infra/            # Terraform configuration
   stacks/         # Docker Compose files grouped by purpose
     github-runner/  # GitHub Actions runner container build + entrypoint (heavy + light services)
     portainer/      # Portainer UI
-gcp/              # Autoscaling runners on GKE (see gcp/README.md)
+gcp/              # One VM per job on Google Cloud (see gcp/README.md)
 ```
 
 ## Runners on GCP
 
-[`gcp/`](gcp/README.md) is a separate Terraform stack for heavy jobs. It runs ephemeral, Docker-capable runners on GKE with GitHub's Actions Runner Controller, through Google's `gh-runner-gke` module. Runners scale with the job queue, and each job gets a new pod. The single-host stack below does not change.
+[`gcp/`](gcp/README.md) is a separate Terraform stack that runs each GitHub Actions job on its own Compute Engine VM. A Cloud Run function creates the VM when GitHub queues a job, and the VM is deleted after the job. The single-host stack below does not change.
 
 ## How Registration Works
 Runner containers mint their own short-lived registration tokens at startup with `gh api` (`POST /orgs/{org}/actions/runners/registration-token`). On shutdown they mint a remove token the same way and deregister themselves.

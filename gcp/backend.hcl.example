@@ -1,7 +1,5 @@
 # Copy to backend.hcl (gitignored) and use: terraform init -backend-config=backend.hcl
-# The state holds the GitHub App private key. Keep the bucket private, with
-# uniform bucket-level access and versioning, and grant access only to the
-# people who apply this stack.
+# Keep the bucket private, with uniform bucket-level access and versioning.
 
 bucket = "your-private-state-bucket"
 prefix = "github-runners/gcp"

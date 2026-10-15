@@ -1,90 +1,139 @@
 variable "project_id" {
   type        = string
-  description = "GCP project that holds the runner cluster. Use a project dedicated to CI."
+  description = "GCP project for the runners. Use a project dedicated to CI."
 }
 
 variable "region" {
   type        = string
-  description = "GCP region for the network and the cluster."
+  description = "GCP region for the network, the controller and the runner VMs."
   default     = "us-central1"
 }
 
-variable "zone" {
-  type        = string
-  description = "GCP zone for the zonal cluster. It must be in var.region."
-  default     = "us-central1-a"
+variable "zones" {
+  type        = list(string)
+  description = "Zones the controller may create runner VMs in, all in var.region. When a zone has no capacity, the controller tries the next one."
+  default     = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
+
+  validation {
+    condition     = length(var.zones) > 0
+    error_message = "Set at least one zone."
+  }
 }
 
-variable "cluster_suffix" {
+variable "name_prefix" {
   type        = string
-  description = "Suffix of the cluster name. The cluster is named gh-runner-<suffix>."
-  default     = "arc"
-}
+  description = "Prefix for resource names, runner VM names and GitHub runner names. Runner VMs are named <prefix>-<job id>."
+  default     = "ghr"
 
-variable "network_name" {
-  type        = string
-  description = "Name of the VPC network created for the runners."
-  default     = "gh-runners"
-}
-
-variable "subnet_name" {
-  type        = string
-  description = "Name of the subnet created for the runners."
-  default     = "gh-runners"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,19}$", var.name_prefix))
+    error_message = "Use 1-20 lowercase letters, digits or hyphens, starting with a letter."
+  }
 }
 
 variable "subnet_cidr" {
   type        = string
-  description = "Primary range of the runner subnet (nodes)."
+  description = "Primary range of the runner subnet."
   default     = "10.10.0.0/20"
 }
 
-variable "pods_cidr" {
-  type        = string
-  description = "Secondary range for pods."
-  default     = "10.20.0.0/16"
+variable "use_cloud_nat" {
+  type        = bool
+  description = "Reach the internet through Cloud NAT instead of an ephemeral public IP per VM. Enable it when an organization policy forbids external IPs. Either way, VMs accept no inbound traffic."
+  default     = false
 }
 
-variable "services_cidr" {
+variable "machine_type" {
   type        = string
-  description = "Secondary range for services."
-  default     = "10.30.0.0/20"
+  description = "Machine type of the runner VMs. n2d-standard-2 (2 vCPU, 8 GB) matches a GitHub-hosted runner for private repositories. Must be x86_64."
+  default     = "n2d-standard-2"
 }
 
-variable "github_config_url" {
+variable "disk_size_gb" {
+  type        = number
+  description = "Boot disk size of each runner VM, in GB (pd-balanced)."
+  default     = 75
+}
+
+variable "source_image" {
   type        = string
-  description = "GitHub organization the runners register to, for example https://github.com/your-org."
+  description = "Boot image for runner VMs. Defaults to Ubuntu 24.04, which installs Docker and the runner at boot. Set it to the image family built by bake-image.sh so VMs start with them preinstalled."
+  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+}
+
+variable "runner_version" {
+  type        = string
+  description = "GitHub Actions runner version installed at boot or bake time. The runner updates itself when GitHub requires a newer version."
+  default     = "2.337.0"
+}
+
+variable "runner_label" {
+  type        = string
+  description = "Custom runner label. Workflows select these runners with runs-on: [self-hosted, <label>]."
+  default     = "gcp-x64"
 
   validation {
-    condition     = can(regex("^https://github\\.com/[^/]+/?$", var.github_config_url))
-    error_message = "Use an organization URL such as https://github.com/your-org."
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.runner_label))
+    error_message = "Use lowercase letters, digits or hyphens."
   }
+}
+
+variable "max_vms" {
+  type        = number
+  description = "Maximum number of runner VMs at once. Check the regional CPU quota against max_vms times the machine's vCPUs."
+  default     = 20
+
+  validation {
+    condition     = var.max_vms >= 1
+    error_message = "max_vms must be at least 1."
+  }
+}
+
+variable "idle_timeout_minutes" {
+  type        = number
+  description = "A VM whose runner has not taken a job after this many minutes is deleted, for example when the job was cancelled while the VM booted."
+  default     = 15
+}
+
+variable "max_vm_lifetime_hours" {
+  type        = number
+  description = "Compute Engine deletes any runner VM after this many hours. Keep it above the longest job timeout."
+  default     = 3
+
+  validation {
+    condition     = var.max_vm_lifetime_hours >= 1 && var.max_vm_lifetime_hours <= 24
+    error_message = "Use 1 to 24 hours."
+  }
+}
+
+variable "github_org" {
+  type        = string
+  description = "GitHub organization the runners register to."
 }
 
 variable "github_app_id" {
   type        = string
-  description = "App ID of the GitHub App that ARC uses to register runners."
+  description = "App ID of the GitHub App."
 }
 
 variable "github_app_installation_id" {
   type        = string
-  description = "Installation ID of that GitHub App in the organization."
+  description = "Installation ID of the GitHub App in the organization."
 }
 
 variable "github_app_private_key_secret" {
   type        = string
-  description = "Secret Manager secret ID (in var.project_id) that holds the GitHub App private key in PEM format."
+  description = "Secret Manager secret ID (in var.project_id) holding the GitHub App private key (PEM)."
 }
 
-variable "github_app_private_key_secret_version" {
+variable "github_webhook_secret_secret" {
   type        = string
-  description = "Version of the private key secret to read."
-  default     = "latest"
+  description = "Secret Manager secret ID (in var.project_id) holding the GitHub App webhook secret."
 }
 
 variable "runner_group" {
   type        = string
-  description = "GitHub runner group for the scale set. Use a group that public repositories cannot use, limited to the repositories that need these runners."
+  description = "GitHub runner group for the runners. The controller refuses to register runners if the group allows public repositories."
 
   validation {
     condition     = length(trimspace(var.runner_group)) > 0 && lower(var.runner_group) != "default"
@@ -92,60 +141,8 @@ variable "runner_group" {
   }
 }
 
-variable "runner_scale_set_name" {
-  type        = string
-  description = "Name of the runner scale set. Workflows select these runners with runs-on: <this name>."
-  default     = "gcp-heavy"
-}
-
-variable "max_runners" {
-  type        = number
-  description = "Maximum number of concurrent runners. Each runner gets its own node."
-  default     = 8
-
-  validation {
-    condition     = var.max_runners >= 1
-    error_message = "max_runners must be at least 1."
-  }
-}
-
-variable "min_nodes" {
-  type        = number
-  description = "Nodes kept running when no job is queued. ARC's controller and listener run there. Must be at least 1; see main.tf."
-  default     = 1
-
-  validation {
-    condition     = var.min_nodes >= 1
-    error_message = "min_nodes must be at least 1, or the ARC controller has no node to run on."
-  }
-}
-
-variable "machine_type" {
-  type        = string
-  description = "Machine type of the runner nodes. n2-standard-4 matches a GitHub-hosted ubuntu-latest runner (4 vCPU, 16 GB). Must be x86_64."
-  default     = "n2-standard-4"
-}
-
-variable "runner_cpu_request" {
-  type        = string
-  description = "CPU request of each runner pod. Keep it above half of a node's allocatable CPU so that only one runner fits on a node."
-  default     = "3"
-}
-
-variable "runner_memory_request" {
-  type        = string
-  description = "Memory request of each runner pod. It must fit in a node's allocatable memory."
-  default     = "10Gi"
-}
-
-variable "runner_image" {
-  type        = string
-  description = "Runner container image. The ARC chart default tracks latest because GitHub refuses connections from deprecated runner versions."
-  default     = "ghcr.io/actions/actions-runner:latest"
-}
-
-variable "arc_version" {
-  type        = string
-  description = "Version of the ARC controller and runner scale set Helm charts. Both charts must use the same version."
-  default     = "0.15.0"
+variable "repositories" {
+  type        = list(string)
+  description = "Repository names (without the organization) that the reconcile job scans for queued jobs whose webhook was lost. Leave empty to rely on webhooks only."
+  default     = []
 }

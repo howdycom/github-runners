@@ -38,3 +38,8 @@ terraform.rc
 
 # Backend config with real bucket names (see gcp/backend.hcl.example)
 backend.hcl
+
+# GCP stack build output and Python caches
+gcp/.build/
+__pycache__/
+.pytest_cache/

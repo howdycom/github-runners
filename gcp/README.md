@@ -1,48 +1,65 @@
 # GitHub runners on GCP
 
-This stack runs ephemeral, Docker-capable GitHub Actions runners on Google Kubernetes Engine (GKE). It uses Google's [`gh-runner-gke`](https://github.com/terraform-google-modules/terraform-google-github-actions-runners/tree/v5.1.0/modules/gh-runner-gke) module, which installs GitHub's [Actions Runner Controller](https://github.com/actions/actions-runner-controller) (ARC).
+This stack runs self-hosted GitHub Actions runners on Google Cloud. Each job gets its own Compute Engine VM, which is deleted after the job. Nothing runs when no jobs are queued.
 
-Use it for heavy jobs, such as Docker image builds and tests that start service containers. The single-host stack in [`infra/`](../infra) stays as it is.
+The single-host stack in [`infra/`](../infra) does not change.
 
-## What it creates
+## How it works
 
-- A dedicated VPC, subnet, Cloud Router and Cloud NAT. Nodes have no public IP. The VPC has no peering or route to other workloads.
-- A zonal GKE cluster with one autoscaling node pool (`n2-standard-4` by default).
-- ARC in `dind` mode. Each job gets a new pod with its own Docker daemon. The pod is deleted when the job ends.
-- One runner scale set (`gcp-heavy` by default), registered to a runner group you choose.
+1. A job with `runs-on: [self-hosted, gcp-x64]` is queued. GitHub sends a signed `workflow_job` webhook to the **webhook** function (Cloud Run functions).
+2. The function checks the signature, the organization, the job's labels and that the repository is private.
+3. It asks GitHub for a just-in-time (JIT) runner config. The config registers one ephemeral runner for one job.
+4. It creates a VM from the instance template and passes the JIT config as instance metadata.
+5. The VM's startup script runs the runner. The runner takes one job, and the VM powers off.
+6. When GitHub reports the job as completed, the function deletes the VM.
 
-Workflows select these runners by the scale set name:
+A **reconcile** function runs every two minutes. It:
 
-```yaml
-jobs:
-  build:
-    runs-on: gcp-heavy
-```
+- deletes VMs that powered off;
+- deletes VMs whose runner never took a job (for example, the job was cancelled while the VM booted);
+- removes runner registrations whose VM no longer exists;
+- creates a VM for any job queued for more than two minutes without one, when `repositories` is set. This covers lost webhooks and zones without capacity.
 
-## How it scales
+Compute Engine also deletes every VM after `max_vm_lifetime_hours`, whatever happens to the job or the controller.
 
-ARC scales runner pods with the job queue, from 0 up to `max_runners`. Each runner requests 3 CPUs and 10 GiB, so only one runner fits on an `n2-standard-4`. The GKE cluster autoscaler adds a node for each runner and removes idle nodes after about 10 minutes.
+## Credentials
 
-The pool keeps `min_nodes` (default 1) running. The module creates a single node pool and waits for the ARC controller to start, so the controller needs a node from the start. That node also takes jobs.
+| From → to | How |
+| --- | --- |
+| GitHub → GCP | GitHub App webhook, signed with HMAC-SHA256 using the webhook secret. The function rejects any request without a valid signature. |
+| GCP → GitHub | The functions authenticate as the GitHub App with short-lived installation tokens (1 hour). The App private key stays in Secret Manager. |
+| GCP → VM | The VM receives only its JIT runner config. It is valid for one runner and one job. |
+| VM → GCP | None. VMs have no service account, so job code cannot get a GCP token. |
 
-If you change `machine_type`, change `runner_cpu_request` and `runner_memory_request` with it. Keep the CPU request above half of the node's allocatable CPU.
+VMs accept no inbound traffic: the network has no ingress firewall rules, so the implied deny-all rule applies.
+
+## Machine size
+
+The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type` and `disk_size_gb` to fit your jobs.
 
 ## Prerequisites
 
-1. **GitHub App.** An organization owner creates a GitHub App with the organization permission **Self-hosted runners: Read and write**, and installs it on the organization. See [Authenticating ARC with a GitHub App](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller/authenticating-to-the-github-api#authenticating-arc-with-a-github-app). Record the App ID and the installation ID, and generate a private key.
-2. **Runner group.** An organization owner creates a runner group that public repositories cannot use, and limits it to the repositories that need these runners. Jobs run with a privileged Docker daemon, so a public repository must never reach them.
-3. **GCP project.** Use a project dedicated to CI. You need permission to enable APIs and to create networks, GKE clusters and service accounts.
-4. **Private key in Secret Manager.** Store the PEM file in the project:
+1. **GitHub App.** An organization owner creates a GitHub App:
+   - Organization permission **Self-hosted runners: Read and write**.
+   - Repository permission **Actions: Read**.
+   - Webhook active, subscribed to **Workflow job** events. The URL comes from the first apply; use a placeholder until then.
+   - A webhook secret (a long random string).
+
+   Install it on the organization, and note the App ID and the installation ID. Generate a private key.
+2. **Runner group.** Create a runner group that public repositories cannot use, and limit it to the repositories that use these runners. The controller refuses to register runners in a group that allows public repositories.
+3. **GCP project.** Use a project dedicated to CI. Check the regional CPU quota: `max_vms` × the machine's vCPUs.
+4. **Secrets.** Store the App private key and the webhook secret in Secret Manager in that project:
 
    ```bash
-   gcloud secrets create github-runners-app-key --replication-policy=automatic --project=<project>
-   gcloud secrets versions add github-runners-app-key --data-file=app.private-key.pem --project=<project>
+   gcloud secrets create github-runners-app-key --data-file=app.private-key.pem --project=<project>
+   printf '%s' '<webhook secret>' | gcloud secrets create github-runners-webhook-secret --data-file=- --project=<project>
    ```
 
    Then delete the local PEM file.
-5. **State bucket.** Create a private GCS bucket with uniform bucket-level access and versioning. The state holds the App private key, because the module writes it to a Kubernetes secret. Grant access only to the people who apply this stack.
+5. **State bucket.** Create a private GCS bucket for Terraform state, with versioning.
+6. **Public invoker.** GitHub calls the webhook function without Google credentials, so the function allows `allUsers` to invoke it. If an organization policy restricts IAM members to your domain, allow an exception for this project.
 
-## Apply
+## Deploy
 
 ```bash
 cd gcp
@@ -50,24 +67,43 @@ cp backend.hcl.example backend.hcl     # gitignored
 cp gcp.tfvars.example gcp.tfvars       # gitignored
 # Fill in both files.
 
-gcloud auth application-default login
 terraform init -backend-config=backend.hcl
-terraform plan -var-file=gcp.tfvars
 terraform apply -var-file=gcp.tfvars
 ```
 
-After the apply, the scale set shows under **Organization settings → Actions → Runner groups → \<your group\>**.
+Set the `webhook_url` output as the GitHub App's webhook URL. Then point a workflow at the runners:
+
+```yaml
+jobs:
+  build:
+    runs-on: [self-hosted, gcp-x64]
+```
 
 Do not commit `backend.hcl` or `gcp.tfvars`. This repository is public.
 
-## Security notes
+## Faster boot with a prebuilt image
 
-- The `dind` container runs privileged. A job can take control of its node. Run only trusted repositories on these runners, and keep public repositories out of the runner group.
-- The GKE control plane has a public endpoint. Access to it still requires Google IAM. Version 5.1.0 of the module cannot restrict it to authorized networks.
-- Do not put production credentials in this project. Jobs execute pull request code.
+By default, VMs boot Ubuntu 24.04 and install Docker and the runner at boot (about two minutes). A prebuilt image cuts that to about a minute:
 
-## Known limits
+```bash
+./bake-image.sh <project> <zone> "$(terraform output -raw subnet)" <runner version>
+```
 
-- **Node disk.** Node boot disks use the GKE module default (100 GB `pd-standard`). `gh-runner-gke` 5.1.0 does not expose disk size or type.
-- **Provider versions.** `gh-runner-gke` 5.1.0 requires the Google provider below 8 and the Helm provider 2.x. The lock file pins the versions in use.
-- **Runner image.** `runner_image` defaults to `ghcr.io/actions/actions-runner:latest`, as the ARC chart does. GitHub refuses connections from deprecated runner versions, so a pinned tag goes dark when it ages out.
+Then set `source_image = "projects/<project>/global/images/family/github-runner"` and apply. Re-run it monthly for OS and Docker updates.
+
+## What a VM provides
+
+Ubuntu 24.04 with Docker Engine, buildx and Compose, git, curl, jq, zip, zstd, Python 3 and build-essential. The job runs as user `runner`, with Docker access and passwordless sudo, as on GitHub-hosted runners. Other tools come from setup actions (`actions/setup-node` and others).
+
+## Edge cases
+
+- **Duplicate webhooks.** The VM is named `<prefix>-<job id>`, so a second delivery finds the VM and does nothing.
+- **A zone without capacity.** The function tries the next zone. If every zone is full, the reconcile job retries.
+- **A runner that takes another job.** Any idle runner with the label can take any queued job. Every queued job still gets a VM, so the counts stay equal.
+- **Failures while creating a VM.** The function removes the runner registration it created, so no orphan runner is left behind.
+- **Limits.** The function stops creating VMs at `max_vms`; the reconcile job starts the rest when VMs free up. The limit is checked per request, so concurrent webhooks can briefly exceed it by a few VMs.
+- **Removing an idle runner.** Before deleting an idle VM, the controller removes its runner registration and deletes the VM only if GitHub accepts. A runner that takes a job in the same instant can still lose it; the job then fails and needs a re-run.
+
+## Costs
+
+You pay for each VM only while its job runs, plus its disk and ephemeral IP. The functions, scheduler and secrets fit in the free tiers at normal volumes. Set `use_cloud_nat = true` if an organization policy forbids external IPs; Cloud NAT adds an hourly and a per-GB charge.
