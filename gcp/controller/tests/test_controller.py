@@ -524,3 +524,10 @@ def test_reconcile_stops_starting_vms_when_the_lock_is_busy(github: FakeGitHub, 
     github.jobs = missed(range(100, 103))
     summary = controller(github, compute, FakeLock(timeout=True), repositories=("app",)).reconcile()
     assert summary["started"] == 0 and github.jit_calls[1:] == []
+
+
+def test_start_results_serialize_as_their_values() -> None:
+    from ghr.controller import STOP_STARTING, StartResult
+
+    assert json.dumps({"result": StartResult.AT_CAPACITY}) == '{"result": "at capacity"}'
+    assert StartResult.CREATED not in STOP_STARTING and StartResult.EXISTS not in STOP_STARTING

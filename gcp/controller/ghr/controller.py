@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol
 
 from . import log
@@ -36,6 +37,20 @@ RUNNER_SUFFIX_BYTES = 3
 
 class UnsafeRunnerGroup(Exception):
     pass
+
+
+class StartResult(StrEnum):
+    """Outcome of start_runner. The value is what the webhook returns."""
+
+    CREATED = "created"
+    EXISTS = "exists"
+    AT_CAPACITY = "at capacity"
+    NO_CAPACITY = "no capacity"
+    BUSY = "busy"
+
+
+# Results after which the reconcile job stops starting VMs for this pass.
+STOP_STARTING = frozenset({StartResult.AT_CAPACITY, StartResult.NO_CAPACITY, StartResult.BUSY})
 
 
 class GitHubPort(Protocol):
@@ -163,7 +178,7 @@ class Controller:
 
     # --- Starting runners -----------------------------------------------------
 
-    def start_runner(self, job_id: int, deadline: float, attempt: int = 0) -> str:
+    def start_runner(self, job_id: int, deadline: float, attempt: int = 0) -> StartResult:
         """Creates the VM for a queued job. Safe to call more than once per job.
 
         The attempt number rotates the zone order, so a retry after a late
@@ -181,21 +196,21 @@ class Controller:
         except Exception:
             self._github.delete_runner(runner_id)
             raise
-        if result != "created":
+        if result is not StartResult.CREATED:
             self._github.delete_runner(runner_id)
         return result
 
-    def _blocked(self, name: str, job_id: int) -> str | None:
+    def _blocked(self, name: str, job_id: int) -> StartResult | None:
         """Why no VM may be created for this job now, or None."""
         instances = self._compute.list_instances()
         if any(instance["name"] == name for instance in instances):
-            return "exists"
+            return StartResult.EXISTS
         if sum(1 for instance in instances if instance["status"] in ACTIVE_STATES) >= self._config.max_vms:
             log.warning("at max_vms; the job waits for the next reconcile pass", job_id=job_id, max_vms=self._config.max_vms)
-            return "at capacity"
+            return StartResult.AT_CAPACITY
         return None
 
-    def _create_vm(self, job_id: int, name: str, jit_config: str, deadline: float, attempt: int) -> str:
+    def _create_vm(self, job_id: int, name: str, jit_config: str, deadline: float, attempt: int) -> StartResult:
         for zone in zone_order(self._config.zones, job_id, attempt):
             try:
                 # Every function instance takes this lock between its check and
@@ -207,9 +222,9 @@ class Controller:
                     operation = self._compute.insert(zone, name, self._config.instance_template, {"jit-config": jit_config})
             except LockTimeout:
                 log.warning("start lock busy; the job waits for the next reconcile pass", vm=name, job_id=job_id)
-                return "busy"
+                return StartResult.BUSY
             except AlreadyExists:
-                return "exists"
+                return StartResult.EXISTS
 
             try:
                 started = self._compute.wait(zone, operation, deadline)
@@ -225,10 +240,10 @@ class Controller:
                     zone=zone,
                     job_id=job_id,
                 )
-            return "created"
+            return StartResult.CREATED
 
         log.error("no zone had capacity; the job waits for the next reconcile pass", vm=name, zones=self._config.zones)
-        return "no capacity"
+        return StartResult.NO_CAPACITY
 
     def _register_runner(self, vm: str) -> tuple[int, str]:
         """Registers a runner for the VM under a new, unique name.
@@ -329,9 +344,9 @@ class Controller:
                 summary["errors"] += 1
                 log.error("reconcile failed to start a runner", job_id=job["id"], detail=str(exc))
                 continue
-            if result == "created":
+            if result is StartResult.CREATED:
                 summary["started"] += 1
-            elif result in ("at capacity", "no capacity", "busy"):
+            elif result in STOP_STARTING:
                 break
 
         log.info("reconcile pass", **summary)
