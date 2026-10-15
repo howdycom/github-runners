@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
@@ -27,6 +29,9 @@ RECONCILE_MAX_STARTS = 10
 # Cloud Scheduler runs the reconcile job this often (controller.tf).
 RECONCILE_INTERVAL_SECONDS = 120
 RUNNER_GROUP_CACHE_SECONDS = 600
+# Each runner registration gets a random suffix after its VM's name, so two
+# attempts for one job never share a runner name.
+RUNNER_SUFFIX_BYTES = 3
 
 
 class UnsafeRunnerGroup(Exception):
@@ -74,6 +79,7 @@ class Controller:
         lock: LockPort,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        runner_suffix: Callable[[], str] = lambda: secrets.token_hex(RUNNER_SUFFIX_BYTES),
     ) -> None:
         self._config = config
         self._github = github
@@ -81,11 +87,26 @@ class Controller:
         self._lock = lock
         self._clock = clock
         self._monotonic = monotonic
+        self._runner_suffix = runner_suffix
+        self._runner_name = re.compile(rf"^({re.escape(config.name_prefix)}-.+)-[0-9a-f]{{{RUNNER_SUFFIX_BYTES * 2}}}$")
         self._group_id: int | None = None
         self._group_checked_at = 0.0
 
     def vm_name(self, job_id: int) -> str:
         return f"{self._config.name_prefix}-{job_id}"
+
+    def _vm_of_runner(self, runner_name: str) -> str | None:
+        """The VM a runner registration belongs to, or None if it is not ours."""
+        match = self._runner_name.match(runner_name)
+        return match.group(1) if match else None
+
+    def _runners_by_vm(self, runners: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        by_vm: dict[str, list[dict[str, Any]]] = {}
+        for runner in runners:
+            vm = self._vm_of_runner(runner["name"])
+            if vm:
+                by_vm.setdefault(vm, []).append(runner)
+        return by_vm
 
     # --- Webhook --------------------------------------------------------------
 
@@ -125,11 +146,12 @@ class Controller:
 
     def _on_completed(self, job: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         runner_name = job.get("runner_name") or ""
-        if runner_name.startswith(f"{self._config.name_prefix}-"):
-            instance = self._compute.find(runner_name)
+        vm = self._vm_of_runner(runner_name)
+        if vm:
+            instance = self._compute.find(vm)
             if instance:
                 self._compute.delete(instance)
-                log.info("deleted runner vm after job", vm=runner_name, job_id=job["id"])
+                log.info("deleted runner vm after job", vm=vm, runner=runner_name, job_id=job["id"])
                 return 200, {"result": "deleted"}
             return 200, {"result": "already gone"}
 
@@ -208,17 +230,19 @@ class Controller:
         log.error("no zone had capacity; the job waits for the next reconcile pass", vm=name, zones=self._config.zones)
         return "no capacity"
 
-    def _register_runner(self, name: str) -> tuple[int, str]:
+    def _register_runner(self, vm: str) -> tuple[int, str]:
+        """Registers a runner for the VM under a new, unique name.
+
+        A unique name means no request ever has to delete a runner by name,
+        which could remove a runner that a concurrent request just handed to
+        its VM.
+        """
         group_id = self._runner_group_id()
         try:
-            return self._github.generate_jit_config(name, group_id, self._config.runner_labels)
+            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, self._config.runner_labels)
         except RunnerNameTaken:
-            # Left over from an attempt whose VM never started. No VM has this
-            # name (checked by the caller), so nothing uses this runner.
-            for runner in self._github.list_runners(name):
-                if runner["name"] == name:
-                    self._github.delete_runner(runner["id"])
-            return self._github.generate_jit_config(name, group_id, self._config.runner_labels)
+            # Two random suffixes collided; a new one will not.
+            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, self._config.runner_labels)
 
     def _runner_group_id(self) -> int:
         if self._group_id is not None and self._clock() - self._group_checked_at < RUNNER_GROUP_CACHE_SECONDS:
@@ -234,18 +258,17 @@ class Controller:
 
     # --- Retiring runners -----------------------------------------------------
 
-    def _retire_if_idle(self, name: str) -> str:
-        instance = self._compute.find(name)
+    def _retire_if_idle(self, vm: str) -> str:
+        instance = self._compute.find(vm)
         if instance is None:
             return "no vm"
-        runner = next((r for r in self._github.list_runners(name) if r["name"] == name), None)
-        if runner is not None:
-            if runner["busy"]:
-                return "busy"
-            if not self._github.delete_runner(runner["id"]):
-                return "busy"
+        runners = self._runners_by_vm(self._github.list_runners(f"{vm}-")).get(vm, [])
+        if any(runner["busy"] for runner in runners):
+            return "busy"
+        if not all(self._github.delete_runner(runner["id"]) for runner in runners):
+            return "busy"
         self._compute.delete(instance)
-        log.info("deleted idle runner vm", vm=name)
+        log.info("deleted idle runner vm", vm=vm)
         return "deleted"
 
     # --- Reconcile ------------------------------------------------------------
@@ -256,7 +279,7 @@ class Controller:
         now = self._clock()
         prefix = f"{self._config.name_prefix}-"
         instances = self._compute.list_instances()
-        runners = {r["name"]: r for r in self._github.list_runners(prefix)}
+        runners = self._runners_by_vm(self._github.list_runners(prefix))
         vm_names = {i["name"] for i in instances}
 
         for instance in instances:
@@ -266,28 +289,33 @@ class Controller:
                     self._compute.delete(instance)
                     summary["finished"] += 1
                 elif instance["status"] in ACTIVE_STATES and now - created_at(instance) >= self._config.idle_timeout_seconds:
-                    runner = runners.get(name)
-                    if runner is None:
+                    vm_runners = runners.get(name, [])
+                    if not vm_runners:
                         # Never registered, or its job ended and the VM did not power off.
                         self._compute.delete(instance)
                         summary["idle"] += 1
-                    elif not runner["busy"] and self._github.delete_runner(runner["id"]):
+                    elif not any(r["busy"] for r in vm_runners) and all(
+                        self._github.delete_runner(r["id"]) for r in vm_runners
+                    ):
                         self._compute.delete(instance)
                         summary["idle"] += 1
             except Exception as exc:
                 summary["errors"] += 1
                 log.error("reconcile failed for vm", vm=name, detail=str(exc))
 
-        for name, runner in runners.items():
-            if name in vm_names or runner["busy"] or runner["status"] != "offline":
+        for vm, vm_runners in runners.items():
+            if vm in vm_names:
                 continue
-            try:
-                # Check again: the webhook may have just created this VM.
-                if self._compute.find(name) is None and self._github.delete_runner(runner["id"]):
-                    summary["orphan_runners"] += 1
-            except Exception as exc:
-                summary["errors"] += 1
-                log.error("reconcile failed for runner", runner=name, detail=str(exc))
+            for runner in vm_runners:
+                if runner["busy"] or runner["status"] != "offline":
+                    continue
+                try:
+                    # Check again: the webhook may have just created this VM.
+                    if self._compute.find(vm) is None and self._github.delete_runner(runner["id"]):
+                        summary["orphan_runners"] += 1
+                except Exception as exc:
+                    summary["errors"] += 1
+                    log.error("reconcile failed for runner", runner=runner["name"], detail=str(exc))
 
         for job in self._missed_jobs(now, vm_names):
             if summary["started"] >= RECONCILE_MAX_STARTS:
