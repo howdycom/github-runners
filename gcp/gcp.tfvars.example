@@ -16,8 +16,9 @@ github_webhook_secret_id      = "github-runners-webhook-secret"
 # A runner group that public repositories cannot use.
 runner_group = "your-runner-group"
 
-# Repositories the reconcile job scans for queued jobs whose webhook was lost.
-# repositories = ["your-repo"]
+# Repositories that use these runners. The reconcile job scans them for
+# queued jobs without a VM.
+repositories = ["your-repo"]
 
 # runner_version        = "2.337.0"
 # runner_sha256         = "<sha256 from the release notes>"

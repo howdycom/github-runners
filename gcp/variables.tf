@@ -154,6 +154,10 @@ variable "runner_group" {
 
 variable "repositories" {
   type        = list(string)
-  description = "Repository names (without the organization) that the reconcile job scans for queued jobs whose webhook was lost. Leave empty to rely on webhooks only."
-  default     = []
+  description = "Names (without the organization) of the repositories that use these runners. The reconcile job scans them for queued jobs without a VM, for example after a lost webhook or a full pool."
+
+  validation {
+    condition     = length(var.repositories) > 0
+    error_message = "List at least one repository. Without it, a job the webhook could not start a VM for stays queued."
+  }
 }

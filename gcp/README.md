@@ -18,7 +18,7 @@ A **reconcile** function runs every two minutes. It:
 - deletes VMs that powered off;
 - deletes VMs whose runner never took a job (for example, the job was cancelled while the VM booted);
 - removes runner registrations whose VM no longer exists;
-- creates a VM for any job queued for more than two minutes without one, when `repositories` is set. This covers lost webhooks and zones without capacity.
+- creates a VM for any job in `repositories` queued for more than two minutes without one. This covers lost webhooks, zones without capacity and a full pool.
 
 Compute Engine also deletes every VM after `max_vm_lifetime_hours`, whatever happens to the job or the controller.
 
