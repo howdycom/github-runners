@@ -62,6 +62,11 @@ jobs:
       - name: Terraform validate (test)
         run: terraform validate
 
+      - name: Terraform init and validate the example root
+        run: |
+          terraform -chdir=example init -backend=false -lockfile=readonly
+          terraform -chdir=example validate
+
       - name: Shellcheck
         run: shellcheck runner/startup.sh bake-image.sh
 

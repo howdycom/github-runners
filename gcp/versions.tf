@@ -1,9 +1,7 @@
+# This directory is a module: the caller configures the backend and the google
+# provider (project and region). example/ is a minimal root that does both.
 terraform {
   required_version = ">= 1.5"
-
-  # The bucket and prefix are passed at init time, so no real names are
-  # committed to this public repo: terraform init -backend-config=backend.hcl
-  backend "gcs" {}
 
   required_providers {
     archive = {
@@ -15,9 +13,4 @@ terraform {
       version = "~> 7.0"
     }
   }
-}
-
-provider "google" {
-  project = var.project_id
-  region  = var.region
 }

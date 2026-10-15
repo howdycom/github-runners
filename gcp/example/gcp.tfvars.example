@@ -20,14 +20,6 @@ runner_group = "your-runner-group"
 # queued jobs without a VM.
 repositories = ["your-repo"]
 
-# runner_version        = "2.337.0"
-# runner_sha256         = "<sha256 from the release notes>"
-# runner_label          = "gcp-x64"
-# machine_type          = "n2d-standard-2"
-# disk_size_gb          = 75
-# disk_type             = "pd-balanced"
-# max_vms               = 20
-# idle_timeout_minutes  = 15
-# max_vm_lifetime_hours = 6
-# source_image          = "projects/your-ci-project/global/images/family/github-runner"  # the default
-# use_cloud_nat         = false
+# Optional settings (machine_type, max_vms, use_cloud_nat, runner_version and
+# others) are inputs of the module, with defaults. Set them in main.tf; see
+# ../variables.tf for the full list.

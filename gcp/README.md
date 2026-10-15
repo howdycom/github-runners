@@ -69,18 +69,20 @@ The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted ru
 
 ## Deploy
 
-First build the VM image. Runner VMs boot from the newest image in the `github-runner` family, with Docker and the runner already installed. Use the same `runner_version` and `runner_sha256` as in your tfvars:
+`gcp/` is a Terraform module. The caller sets the backend and the `google` provider. [`example/`](example) is a minimal root that does both, so you can deploy straight from this repository.
+
+First build the VM image. Runner VMs boot from the newest image in the `github-runner` family, with Docker and the runner already installed. Use the same `runner_version` and `runner_sha256` as the module (see `variables.tf` for the defaults):
 
 ```bash
-cd gcp
-./bake-image.sh <project> <zone> <runner_version> <runner_sha256>
+cd gcp/example
+../bake-image.sh <project> <zone> <runner_version> <runner_sha256>
 ```
 
-The script builds the image in a temporary network with a public IP, then deletes the network. If an organization policy forbids external IPs, apply the network first with `use_cloud_nat = true`, then pass the stack's subnet as the fifth argument:
+The script builds the image in a temporary network with a public IP, then deletes the network. If an organization policy forbids external IPs, set `use_cloud_nat = true` in the module call, apply the network first, then pass the stack's subnet as the fifth argument:
 
 ```bash
-terraform apply -var-file=gcp.tfvars -target=google_compute_router_nat.runners
-./bake-image.sh <project> <zone> <runner_version> <runner_sha256> "$(terraform output -raw subnet)"
+terraform apply -var-file=gcp.tfvars -target=module.runners.google_compute_router_nat.runners
+../bake-image.sh <project> <zone> <runner_version> <runner_sha256> "$(terraform output -raw subnet)"
 ```
 
 Re-run `bake-image.sh` monthly for OS and Docker updates. New VMs use the new image at once.
@@ -90,7 +92,7 @@ Then deploy the stack:
 ```bash
 cp backend.hcl.example backend.hcl     # gitignored
 cp gcp.tfvars.example gcp.tfvars       # gitignored
-# Fill in both files.
+# Fill in both files. Optional settings go in the module call in main.tf.
 
 terraform init -backend-config=backend.hcl
 terraform apply -var-file=gcp.tfvars
@@ -105,6 +107,19 @@ jobs:
 ```
 
 Do not commit `backend.hcl` or `gcp.tfvars`. This repository is public.
+
+### Deploy from another repository
+
+To keep your real values in a private repository, copy `example/` there and point the module at a pinned version of this repository:
+
+```hcl
+module "runners" {
+  source = "git::https://github.com/<org>/github-runners.git//gcp?ref=<commit or tag>"
+  # inputs as in example/main.tf
+}
+```
+
+To upgrade, change `ref`. The state stays in the backend you configure in that repository.
 
 ## What a VM provides
 
