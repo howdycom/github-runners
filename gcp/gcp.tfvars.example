@@ -1,0 +1,24 @@
+# Copy to gcp.tfvars (gitignored) and fill in your own values.
+# Do not commit real values: this repository is public.
+
+project_id = "your-ci-project"
+# region   = "us-central1"
+# zone     = "us-central1-a"
+
+github_config_url          = "https://github.com/your-org"
+github_app_id              = "123456"
+github_app_installation_id = "12345678"
+
+# Secret Manager secret ID in project_id that holds the App private key (PEM).
+github_app_private_key_secret = "github-runners-app-key"
+
+# A runner group that public repositories cannot use.
+runner_group = "your-runner-group"
+
+# runner_scale_set_name = "gcp-heavy"
+# max_runners           = 8
+# min_nodes             = 1
+# machine_type          = "n2-standard-4"
+# runner_cpu_request    = "3"
+# runner_memory_request = "10Gi"
+# arc_version           = "0.15.0"
