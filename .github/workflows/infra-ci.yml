@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "infra/**"
+      - "gcp/**"
       - ".github/workflows/infra-ci.yml"
   pull_request:
     paths:
       - "infra/**"
+      - "gcp/**"
       - ".github/workflows/infra-ci.yml"
 
 jobs:
@@ -35,3 +37,77 @@ jobs:
 
       - name: Terraform plan
         run: terraform plan -input=false -lock=false -refresh=false
+
+  # No plan for the GCP stack: it needs GCP credentials, which this public
+  # repository's CI does not have.
+  terraform-gcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gcp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt (lint)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (build)
+        run: terraform init -backend=false -lockfile=readonly
+
+      - name: Terraform validate (test)
+        run: terraform validate
+
+      - name: Terraform init and validate the example root
+        run: |
+          terraform -chdir=example init -backend=false -lockfile=readonly
+          terraform -chdir=example validate
+
+      - name: Shellcheck
+        run: shellcheck runner/startup.sh bake-image.sh
+
+  controller-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gcp/controller
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        run: python -m pytest -q tests
+
+  startup-script-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gcp/runner
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install pytest==9.1.1
+
+      - name: Test
+        run: python -m pytest -q tests

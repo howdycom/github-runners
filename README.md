@@ -16,7 +16,13 @@ infra/            # Terraform configuration
   stacks/         # Docker Compose files grouped by purpose
     github-runner/  # GitHub Actions runner container build + entrypoint (heavy + light services)
     portainer/      # Portainer UI
+gcp/              # Terraform module: one VM per job on Google Cloud (see gcp/README.md)
+  example/        # Minimal root that deploys the module
 ```
+
+## Runners on GCP
+
+[`gcp/`](gcp/README.md) is a separate Terraform module that runs each GitHub Actions job on its own Compute Engine VM. Deploy it with [`gcp/example/`](gcp/example), or call it from your own root. A Cloud Run function creates the VM when GitHub queues a job, and the VM is deleted after the job. The single-host stack below does not change.
 
 ## How Registration Works
 Runner containers mint their own short-lived registration tokens at startup with `gh api` (`POST /orgs/{org}/actions/runners/registration-token`). On shutdown they mint a remove token the same way and deregister themselves.

@@ -1,0 +1,5 @@
+functions-framework==3.10.2
+google-auth==2.59.1
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2
+requests==2.34.2
