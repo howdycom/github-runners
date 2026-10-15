@@ -10,9 +10,10 @@
 # -E makes the ERR trap below fire inside functions too.
 set -Eeuo pipefail
 
-RUNNER_DIR=/opt/actions-runner
+# The GHR_ overrides exist for runner/tests only.
+RUNNER_DIR="${GHR_RUNNER_DIR:-/opt/actions-runner}"
 RUNNER_USER=runner
-INSTALLED_MARKER=/etc/ghr-installed
+INSTALLED_MARKER="${GHR_INSTALLED_MARKER:-/etc/ghr-installed}"
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/instance/attributes
 APT_OPTS=(-o DPkg::Lock::Timeout=600 -y --no-install-recommends)
 
@@ -31,7 +32,18 @@ shutdown_now() {
 
 # Any failing command stops the script and powers the VM off. In run mode the
 # controller then deletes the VM; in bake mode no image is created.
-trap 'log "failed at line ${LINENO}"; shutdown_now' ERR
+# shellcheck disable=SC2317 # called by the ERR trap, not directly
+on_error() {
+  # Inside $(...) only fail the substitution. Logging here would put the log
+  # text into the caller's variable; the failed assignment then triggers this
+  # handler again in the main shell.
+  if [ "${BASH_SUBSHELL}" -gt 0 ]; then
+    exit 1
+  fi
+  log "failed at line $1"
+  shutdown_now
+}
+trap 'on_error ${LINENO}' ERR
 
 install_runner_host() {
   if [ -f "${INSTALLED_MARKER}" ]; then
