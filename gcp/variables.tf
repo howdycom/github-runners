@@ -39,7 +39,7 @@ variable "subnet_cidr" {
 
 variable "use_cloud_nat" {
   type        = bool
-  description = "Reach the internet through Cloud NAT instead of an ephemeral public IP per VM. Enable it when an organization policy forbids external IPs. Either way, VMs accept no inbound traffic."
+  description = "Reach the internet through Cloud NAT instead of an ephemeral public IP per VM. Required when the organization policy constraints/compute.vmExternalIpAccess forbids external IPs; without it the controller cannot create runner VMs there. Either way, VMs accept no inbound traffic. See README.md#network."
   default     = false
 }
 

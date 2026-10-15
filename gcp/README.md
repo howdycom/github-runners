@@ -35,6 +35,12 @@ VMs accept no inbound traffic: the network has no ingress firewall rules, so the
 
 The controller's Compute Engine role has an IAM condition: for instances and disks, it applies only to names that start with `<prefix>-`. The internet-facing webhook cannot change or delete any other VM in the project.
 
+## Network
+
+Each VM gets an ephemeral public IP for outbound traffic: GitHub, package mirrors and container registries. It has no inbound access.
+
+Many organizations enforce the policy `constraints/compute.vmExternalIpAccess`, which forbids external IPs on VMs. With that policy, the controller cannot create any runner VM. Set `use_cloud_nat = true` for those projects: VMs then have no public IP and reach the internet through Cloud NAT. The default (`false`) creates no router or NAT gateway. Cloud NAT adds an hourly charge per VM and a charge per GB processed.
+
 ## Machine size
 
 The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type` and `disk_size_gb` to fit your jobs.
@@ -108,4 +114,4 @@ Ubuntu 24.04 with Docker Engine, buildx and Compose, git, curl, jq, zip, zstd, P
 
 ## Costs
 
-You pay for each VM only while its job runs, plus its disk and ephemeral IP. The functions, scheduler and secrets fit in the free tiers at normal volumes. Set `use_cloud_nat = true` if an organization policy forbids external IPs; Cloud NAT adds an hourly and a per-GB charge.
+You pay for each VM only while its job runs, plus its disk and ephemeral IP. The functions, scheduler and secrets fit in the free tiers at normal volumes. See [Network](#network) for the cost of Cloud NAT.
