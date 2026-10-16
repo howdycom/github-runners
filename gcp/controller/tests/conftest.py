@@ -129,6 +129,8 @@ class FakeGitHub:
 class FakeCompute:
     instances: dict[str, dict[str, Any]] = field(default_factory=dict)
     full_zones: set[str] = field(default_factory=set)
+    # Machine types with no capacity in any zone, by instance template.
+    full_templates: set[str] = field(default_factory=set)
     fail_insert: Exception | None = None
     race_on_insert: bool = False
     # The labels of each instance template, as runner.tf sets them.
@@ -136,6 +138,11 @@ class FakeCompute:
         default_factory=lambda: {
             "projects/test-project/global/instanceTemplates/ghr-runner-1": {"ghr_managed": "true", "ghr_pool": "ghr"},
             "projects/test-project/global/instanceTemplates/ghr-heavy-1": {
+                "ghr_managed": "true",
+                "ghr_pool": "ghr",
+                "ghr_class": "heavy",
+            },
+            "projects/test-project/global/instanceTemplates/ghr-heavy-fallback-1": {
                 "ghr_managed": "true",
                 "ghr_pool": "ghr",
                 "ghr_class": "heavy",
@@ -159,7 +166,7 @@ class FakeCompute:
             raise self.fail_insert
         if self.race_on_insert:
             raise AlreadyExists(name)
-        if zone in self.full_zones:
+        if zone in self.full_zones or template in self.full_templates:
             # Compute Engine accepts the request; the operation fails later.
             return {"zone": zone, "full": True}
         # The real insert copies the labels of the instance template.

@@ -4,18 +4,23 @@ locals {
     ZONES                   = join(",", var.zones)
     INSTANCE_TEMPLATE       = google_compute_instance_template.runner["standard"].id
     HEAVY_INSTANCE_TEMPLATE = try(google_compute_instance_template.runner["heavy"].id, "")
-    HEAVY_RUNNER_LABEL      = var.heavy_runner_label
-    MAX_HEAVY_VMS           = tostring(var.max_heavy_vms)
-    NAME_PREFIX             = var.name_prefix
-    RUNNER_LABEL            = var.runner_label
-    RUNNER_GROUP            = var.runner_group
-    GITHUB_ORG              = var.github_org
-    GITHUB_APP_ID           = var.github_app_id
-    GITHUB_INSTALLATION_ID  = var.github_app_installation_id
-    REPOSITORIES            = join(",", var.repositories)
-    MAX_VMS                 = tostring(var.max_vms)
-    IDLE_TIMEOUT_SECONDS    = tostring(var.idle_timeout_minutes * 60)
-    LOCK_BUCKET             = google_storage_bucket.locks.name
+    # In the order of heavy_fallback_machine_types: the controller tries them in turn.
+    HEAVY_FALLBACK_INSTANCE_TEMPLATES = join(",", [
+      for type in var.heavy_fallback_machine_types : google_compute_instance_template.runner["heavy-${type}"].id
+      if var.heavy_machine_type != null
+    ])
+    HEAVY_RUNNER_LABEL     = var.heavy_runner_label
+    MAX_HEAVY_VMS          = tostring(var.max_heavy_vms)
+    NAME_PREFIX            = var.name_prefix
+    RUNNER_LABEL           = var.runner_label
+    RUNNER_GROUP           = var.runner_group
+    GITHUB_ORG             = var.github_org
+    GITHUB_APP_ID          = var.github_app_id
+    GITHUB_INSTALLATION_ID = var.github_app_installation_id
+    REPOSITORIES           = join(",", var.repositories)
+    MAX_VMS                = tostring(var.max_vms)
+    IDLE_TIMEOUT_SECONDS   = tostring(var.idle_timeout_minutes * 60)
+    LOCK_BUCKET            = google_storage_bucket.locks.name
   }
 
   controller_secrets = {

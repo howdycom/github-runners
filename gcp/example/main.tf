@@ -39,5 +39,6 @@ module "runners" {
   # Optional settings are module inputs with defaults; see ../variables.tf.
   # For example: machine_type = "n2d-standard-2", max_vms = 20.
   # Heavy pool, after baking the github-runner-heavy family:
-  #   heavy_machine_type = "n2-standard-8"
+  #   heavy_machine_type           = "e2-standard-8"
+  #   heavy_fallback_machine_types = ["n2-standard-8"]
 }

@@ -660,3 +660,152 @@ def test_new_runner_names_carry_the_registration_time(github: FakeGitHub, comput
     ctrl.start_runner(1001, deadline=5)
     name = github.jit_calls[0][0]
     assert name.startswith(f"ghr-1001-{int(NOW):08x}") and len(name.rsplit("-", 1)[1]) == 12
+
+
+# --- Interchangeable VMs ------------------------------------------------------
+
+OLD_JOB = "2027-01-15T07:55:00Z"  # five minutes before NOW
+YOUNG_JOB = "2027-01-15T07:59:30Z"  # inside the webhook's grace period
+HEAVY_LABELS = ["self-hosted", "gcp-x64-heavy"]
+HEAVY_VM = {"ghr_managed": "true", "ghr_pool": "ghr", "ghr_class": "heavy"}
+
+
+def test_reconcile_starts_a_vm_for_a_job_whose_own_vm_took_another_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    # PR CI on 2026-10-16: three of four heavy VMs started. GitHub gave the VM
+    # named for shard 1 to shard 3, and shard 1 waited until shard 3 finished.
+    github.jobs = {"app": [{"id": 198, "labels": HEAVY_LABELS, "created_at": OLD_JOB}]}
+    compute.instances = {"ghr-198": instance("ghr-198", labels=HEAVY_VM)}
+    github.runners = {"ghr-198-x": runner("ghr-198", 1, busy=True)}
+
+    summary = controller(github, compute, repositories=("app",), **HEAVY).reconcile()
+
+    assert summary["started"] == 1
+    assert [name for _, name, _ in compute.inserts] == ["ghr-198-2"]
+    assert compute.templates == [HEAVY["heavy_instance_template"]]
+
+
+def test_reconcile_counts_a_free_vm_named_for_another_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    # Job 9 already ran elsewhere. Its VM is still free, and takes job 1.
+    github.jobs = {"app": [{"id": 1, "labels": ["gcp-x64"], "created_at": OLD_JOB}]}
+    compute.instances = {"ghr-9": instance("ghr-9")}
+
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+
+    assert summary["started"] == 0 and compute.inserts == []
+
+
+def test_a_free_vm_covers_only_jobs_of_its_own_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {"app": [{"id": 1, "labels": HEAVY_LABELS, "created_at": OLD_JOB}]}
+    compute.instances = {"ghr-9": instance("ghr-9")}  # a free standard VM
+
+    summary = controller(github, compute, repositories=("app",), **HEAVY).reconcile()
+
+    assert summary["started"] == 1 and [name for _, name, _ in compute.inserts] == ["ghr-1"]
+
+
+def test_a_vm_deleted_in_the_same_pass_does_not_cover_a_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {"app": [{"id": 1, "labels": ["gcp-x64"], "created_at": OLD_JOB}]}
+    compute.instances = {"ghr-9": instance("ghr-9", "TERMINATED")}
+
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+
+    assert summary["finished"] == 1 and summary["started"] == 1
+    assert [name for _, name, _ in compute.inserts] == ["ghr-1"]
+
+
+def test_one_free_vm_covers_one_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 1, "labels": ["gcp-x64"], "created_at": OLD_JOB},
+            {"id": 2, "labels": ["gcp-x64"], "created_at": OLD_JOB},
+        ]
+    }
+    compute.instances = {"ghr-9": instance("ghr-9")}
+
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+
+    assert summary["started"] == 1 and len(compute.inserts) == 1
+
+
+def test_a_young_job_whose_own_vm_took_another_job_waits_for_the_grace_period(
+    github: FakeGitHub, compute: FakeCompute
+) -> None:
+    github.jobs = {"app": [{"id": 198, "labels": ["gcp-x64"], "created_at": YOUNG_JOB}]}
+    compute.instances = {"ghr-198": instance("ghr-198")}
+    github.runners = {"ghr-198-x": runner("ghr-198", 1, busy=True)}
+
+    summary = controller(github, compute, repositories=("app",)).reconcile()
+
+    assert summary["started"] == 0 and compute.inserts == []
+
+
+def test_a_numbered_vm_name_skips_names_in_use(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {"app": [{"id": 198, "labels": ["gcp-x64"], "created_at": OLD_JOB}]}
+    compute.instances = {name: instance(name) for name in ("ghr-198", "ghr-198-2")}
+    github.runners = {
+        "ghr-198-x": runner("ghr-198", 1, busy=True),
+        "ghr-198-2-x": runner("ghr-198-2", 2, busy=True),
+    }
+
+    controller(github, compute, repositories=("app",)).reconcile()
+
+    assert [name for _, name, _ in compute.inserts] == ["ghr-198-3"]
+
+
+def test_a_numbered_vm_is_deleted_after_its_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.instances = {"ghr-198-2": instance("ghr-198-2")}
+    finished = job(198, runner_name=f"ghr-198-2-{OLD}")
+
+    _, response = controller(github, compute).handle_webhook(*webhook_request("completed", finished), SECRET)
+
+    assert response == {"result": "deleted"} and compute.deleted == ["ghr-198-2"]
+
+
+# --- Fallback machine types ---------------------------------------------------
+
+FALLBACK = "projects/test-project/global/instanceTemplates/ghr-heavy-fallback-1"
+HEAVY_WITH_FALLBACK = {**HEAVY, "heavy_fallback_instance_templates": (FALLBACK,)}
+
+
+def test_uses_the_fallback_machine_type_when_no_zone_has_the_first(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.full_templates = {HEAVY["heavy_instance_template"]}
+
+    _, response = controller(github, compute, **HEAVY_WITH_FALLBACK).handle_webhook(
+        *webhook_request("queued", job(1001, labels=tuple(HEAVY_LABELS))), SECRET
+    )
+
+    assert response == {"result": "created"}
+    # Every zone with the first machine type, then the fallback.
+    assert compute.templates == [HEAVY["heavy_instance_template"]] * 3 + [FALLBACK]
+    assert compute.instances["ghr-1001"]["labels"]["ghr_class"] == "heavy"
+
+
+def test_keeps_the_first_machine_type_while_any_zone_has_it(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.full_zones = set(zone_order(("zone-a", "zone-b", "zone-c"), 1001)[:2])
+
+    controller(github, compute, **HEAVY_WITH_FALLBACK).handle_webhook(
+        *webhook_request("queued", job(1001, labels=tuple(HEAVY_LABELS))), SECRET
+    )
+
+    assert compute.templates == [HEAVY["heavy_instance_template"]] * 3
+
+
+def test_no_capacity_for_any_machine_type_leaves_the_job_for_reconcile(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.full_templates = {HEAVY["heavy_instance_template"], FALLBACK}
+
+    _, response = controller(github, compute, **HEAVY_WITH_FALLBACK).handle_webhook(
+        *webhook_request("queued", job(1001, labels=tuple(HEAVY_LABELS))), SECRET
+    )
+
+    assert response == {"result": "no capacity"}
+    assert len(compute.inserts) == 6 and github.runners == {}
+
+
+def test_the_standard_pool_has_no_fallback(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.full_templates = {"projects/test-project/global/instanceTemplates/ghr-runner-1"}
+
+    _, response = controller(github, compute, **HEAVY_WITH_FALLBACK).handle_webhook(
+        *webhook_request("queued", job(1001)), SECRET
+    )
+
+    assert response == {"result": "no capacity"} and len(compute.inserts) == 3

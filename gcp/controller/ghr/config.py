@@ -23,10 +23,16 @@ class RunnerPool:
     label: str
     template: str
     max_vms: int
+    # Tried in order when no zone has capacity for the template above.
+    fallback_templates: tuple[str, ...] = ()
 
     @property
     def runner_labels(self) -> tuple[str, ...]:
         return (*DEFAULT_RUNNER_LABELS, self.label)
+
+    @property
+    def templates(self) -> tuple[str, ...]:
+        return (self.template, *self.fallback_templates)
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,9 @@ class Config:
     heavy_instance_template: str = ""
     heavy_runner_label: str = "gcp-x64-heavy"
     max_heavy_vms: int = 0
+    # Other machine types for the heavy pool, used in order when no zone has
+    # capacity for heavy_instance_template.
+    heavy_fallback_instance_templates: tuple[str, ...] = ()
 
     def standard_pool(self) -> RunnerPool:
         return RunnerPool("standard", self.runner_label, self.instance_template, self.max_vms)
@@ -55,7 +64,13 @@ class Config:
     def heavy_pool(self) -> RunnerPool | None:
         if not self.heavy_instance_template:
             return None
-        return RunnerPool("heavy", self.heavy_runner_label, self.heavy_instance_template, self.max_heavy_vms)
+        return RunnerPool(
+            "heavy",
+            self.heavy_runner_label,
+            self.heavy_instance_template,
+            self.max_heavy_vms,
+            self.heavy_fallback_instance_templates,
+        )
 
     def pools(self) -> tuple[RunnerPool, ...]:
         heavy = self.heavy_pool()
@@ -72,10 +87,13 @@ class Config:
         heavy_template = env.get("HEAVY_INSTANCE_TEMPLATE", "").strip()
         heavy_label = env.get("HEAVY_RUNNER_LABEL", "gcp-x64-heavy").strip().lower()
         max_heavy_vms = int(env.get("MAX_HEAVY_VMS") or "0")
+        heavy_fallbacks = _split(env.get("HEAVY_FALLBACK_INSTANCE_TEMPLATES", ""))
         if heavy_template and heavy_label == runner_label:
             raise ValueError("HEAVY_RUNNER_LABEL must differ from RUNNER_LABEL")
         if heavy_template and max_heavy_vms < 1:
             raise ValueError("MAX_HEAVY_VMS must be at least 1 when the heavy pool is enabled")
+        if heavy_fallbacks and not heavy_template:
+            raise ValueError("HEAVY_FALLBACK_INSTANCE_TEMPLATES needs HEAVY_INSTANCE_TEMPLATE")
         return cls(
             project=env["GCP_PROJECT"],
             zones=zones,
@@ -93,4 +111,5 @@ class Config:
             heavy_instance_template=heavy_template,
             heavy_runner_label=heavy_label,
             max_heavy_vms=max_heavy_vms,
+            heavy_fallback_instance_templates=heavy_fallbacks,
         )

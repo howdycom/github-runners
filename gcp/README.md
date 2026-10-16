@@ -50,9 +50,18 @@ Two pools. A job selects one with its `runs-on` label. A VM registers only that 
 | Standard | `gcp-x64` | `n2d-standard-2` (2 vCPU, 8 GB) | `github-runner` |
 | Heavy | `gcp-x64-heavy` | off until you set `heavy_machine_type` | `github-runner-heavy` |
 
-`e2-standard-2` costs about 20% less than `n2d-standard-2`, but its CPU is shared between VMs, so build times vary more. For the heavy pool use a dedicated 8 vCPU type, `n2-standard-8` (8 vCPU, 32 GB). `e2-standard-8` shares its CPU and is a poor fit for unit tests.
+`e2-standard-2` costs about 20% less than `n2d-standard-2`, but build times vary more. For the heavy pool use an 8 vCPU type: `e2-standard-8` costs less, and `n2-standard-8` is faster per core. In `us-central1`, `n2` and `n2d` have run out of capacity in some zones while `e2` still had it.
 
-Each pool has its own cap: `max_vms` and `max_heavy_vms`. Check the regional CPU quota for each machine type separately. N2 and E2 quotas are not the same number.
+`heavy_fallback_machine_types` lists other machine types for the heavy pool. The controller tries every zone with `heavy_machine_type` first, and moves to the next type only when no zone has capacity for it. Each type gets its own instance template with the heavy image and label.
+
+```hcl
+heavy_machine_type           = "e2-standard-8"
+heavy_fallback_machine_types = ["n2-standard-8"]
+```
+
+Each pool has its own cap: `max_vms` and `max_heavy_vms`. A fallback VM counts against `max_heavy_vms`. Check the regional CPU quota for each machine type separately. N2 and E2 quotas are not the same number.
+
+The VMs of one pool are interchangeable. GitHub gives a new runner any queued job with its label, not the job its VM is named after. So reconcile counts each VM whose runner is not busy as a free runner for one queued job of its pool, and starts a VM for each queued job left over. A job whose own VM took another job gets a VM named `<prefix>-<job id>-2`.
 
 ```yaml
 jobs:
