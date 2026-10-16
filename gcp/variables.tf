@@ -122,12 +122,6 @@ variable "heavy_runner_label" {
   }
 }
 
-variable "heavy_disk_size_gb" {
-  type        = number
-  description = "Boot disk size of each heavy VM, in GB. Defaults to disk_size_gb."
-  default     = null
-}
-
 variable "max_heavy_vms" {
   type        = number
   description = "Maximum number of heavy VMs at once. This cap is separate from max_vms. Check the regional CPU quota for this machine type: max_heavy_vms times its vCPUs."

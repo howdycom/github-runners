@@ -3,7 +3,6 @@ locals {
   source_image = coalesce(var.source_image, "projects/${var.project_id}/global/images/family/github-runner")
   # A second family, so rebuilding the standard image does not change heavy VMs.
   heavy_source_image = "projects/${var.project_id}/global/images/family/github-runner-heavy"
-  heavy_disk_size_gb = coalesce(var.heavy_disk_size_gb, var.disk_size_gb)
 
   # The controller filters on these labels, so it only ever touches its own VMs.
   # Heavy VMs also carry ghr_class = "heavy", which splits the two caps. A VM
@@ -31,7 +30,7 @@ locals {
         machine_type = var.heavy_machine_type
         labels       = merge(local.runner_vm_labels, { ghr_class = "heavy" })
         source_image = local.heavy_source_image
-        disk_size_gb = local.heavy_disk_size_gb
+        disk_size_gb = var.disk_size_gb
       }
     } : pool => template if pool != "heavy" || var.heavy_machine_type != null
   }
