@@ -80,11 +80,7 @@ resource "google_compute_instance_template" "heavy" {
 
   name_prefix  = "${var.name_prefix}-heavy-"
   machine_type = var.heavy_machine_type
-  labels = {
-    ghr_managed = "true"
-    ghr_pool    = var.name_prefix
-    ghr_class   = "heavy"
-  }
+  labels       = merge(local.runner_vm_labels, { ghr_class = "heavy" })
 
   disk {
     boot         = true
