@@ -83,3 +83,39 @@ def test_rejects_a_heavy_pool_with_no_capacity() -> None:
                 "MAX_HEAVY_VMS": "0",
             }
         )
+
+
+HEAVY_ENV = {
+    **ENV,
+    "HEAVY_INSTANCE_TEMPLATE": "projects/p/global/instanceTemplates/heavy",
+    "HEAVY_RUNNER_LABEL": "gcp-x64-heavy",
+    "MAX_HEAVY_VMS": "12",
+}
+
+
+def test_reads_the_heavy_fallback_machine_types_in_order() -> None:
+    config = Config.from_env(
+        {
+            **HEAVY_ENV,
+            "HEAVY_FALLBACK_INSTANCE_TEMPLATES": "projects/p/global/instanceTemplates/n2, projects/p/global/instanceTemplates/n2d,",
+        }
+    )
+    heavy = config.heavy_pool()
+    assert heavy is not None
+    assert heavy.templates == (
+        "projects/p/global/instanceTemplates/heavy",
+        "projects/p/global/instanceTemplates/n2",
+        "projects/p/global/instanceTemplates/n2d",
+    )
+
+
+def test_pools_have_no_fallback_unless_configured() -> None:
+    config = Config.from_env(HEAVY_ENV)
+    heavy = config.heavy_pool()
+    assert heavy is not None and heavy.templates == ("projects/p/global/instanceTemplates/heavy",)
+    assert config.standard_pool().templates == ("projects/p/global/instanceTemplates/t",)
+
+
+def test_rejects_fallbacks_without_a_heavy_pool() -> None:
+    with pytest.raises(ValueError, match="HEAVY_FALLBACK_INSTANCE_TEMPLATES"):
+        Config.from_env({**ENV, "HEAVY_FALLBACK_INSTANCE_TEMPLATES": "projects/p/global/instanceTemplates/n2"})

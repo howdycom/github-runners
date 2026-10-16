@@ -102,12 +102,25 @@ variable "runner_label" {
 
 variable "heavy_machine_type" {
   type        = string
-  description = "Machine type of the heavy pool, for CPU-heavy jobs such as unit tests and end-to-end tests. Use an 8 vCPU type such as n2-standard-8 (8 vCPU, 32 GB, dedicated cores). Leave null to run only the standard pool. e2 shares its CPU, so it is a poor fit for this pool."
+  description = "Machine type of the heavy pool, for CPU-heavy jobs such as unit tests and end-to-end tests. Use an 8 vCPU type such as e2-standard-8 or n2-standard-8 (8 vCPU, 32 GB). e2 costs less and has often had capacity when n2 had none. n2 is faster per core. Leave null to run only the standard pool."
   default     = null
 
   validation {
     condition     = var.heavy_machine_type == null || can(regex("^[a-z0-9-]+$", var.heavy_machine_type))
     error_message = "Use a Compute Engine machine type, for example n2-standard-8."
+  }
+}
+
+variable "heavy_fallback_machine_types" {
+  type        = list(string)
+  description = "Other machine types for the heavy pool, tried in order when no zone has capacity for heavy_machine_type. Each gets its own instance template with the heavy image and label. Check the regional CPU quota of each machine family. Ignored while heavy_machine_type is null."
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for type in var.heavy_fallback_machine_types : can(regex("^[a-z0-9-]+$", type))
+    ]) && length(distinct(var.heavy_fallback_machine_types)) == length(var.heavy_fallback_machine_types)
+    error_message = "Use distinct Compute Engine machine types, for example [\"n2-standard-8\"]."
   }
 }
 

@@ -12,10 +12,22 @@ locals {
     ghr_pool    = var.name_prefix
   }
 
-  # One instance template per pool. The heavy entry exists only when
-  # heavy_machine_type is set, so an apply does not require the heavy image
-  # family until you opt in.
-  runner_templates = {
+  # The heavy pool's fallback machine types. Same image, disk and label as the
+  # heavy template, so a VM from any of them is a heavy VM.
+  heavy_fallback_templates = {
+    for type in var.heavy_fallback_machine_types : "heavy-${type}" => {
+      name_prefix  = "${var.name_prefix}-heavy-${type}-"
+      machine_type = type
+      labels       = merge(local.runner_vm_labels, { ghr_class = "heavy" })
+      source_image = local.heavy_source_image
+      disk_size_gb = var.disk_size_gb
+    } if var.heavy_machine_type != null
+  }
+
+  # One instance template per pool, plus one per heavy fallback machine type.
+  # The heavy entries exist only when heavy_machine_type is set, so an apply
+  # does not require the heavy image family until you opt in.
+  runner_templates = merge({
     for pool, template in {
       standard = {
         name_prefix  = "${var.name_prefix}-runner-"
@@ -33,7 +45,7 @@ locals {
         disk_size_gb = var.disk_size_gb
       }
     } : pool => template if pool != "heavy" || var.heavy_machine_type != null
-  }
+  }, local.heavy_fallback_templates)
 }
 
 # The controller creates one VM per job from this template and adds the job's
@@ -95,7 +107,7 @@ resource "google_compute_instance_template" "runner" {
     # A failed check block only warns. The controller refuses one label for
     # both pools, so stop the apply here instead.
     precondition {
-      condition     = each.key != "heavy" || var.heavy_runner_label != var.runner_label
+      condition     = !startswith(each.key, "heavy") || var.heavy_runner_label != var.runner_label
       error_message = "heavy_runner_label must differ from runner_label, or a heavy VM can take a standard job."
     }
   }

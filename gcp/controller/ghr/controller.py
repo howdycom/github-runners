@@ -216,17 +216,19 @@ class Controller:
         deadline: float,
         attempt: int = 0,
         job_labels: Iterable[str] | None = None,
+        name: str | None = None,
     ) -> StartResult:
         """Creates the VM for a queued job. Safe to call more than once per job.
 
         The attempt number rotates the zone order, so a retry after a late
         capacity failure does not start in the same zone again. job_labels
-        selects the pool. Callers that omit them get the standard pool.
+        selects the pool. Callers that omit them get the standard pool. name
+        overrides the VM name, for a job whose own VM took another job.
         """
         pool = self._config.standard_pool() if job_labels is None else pool_for(self._config, job_labels)
         if pool is None:
             raise ValueError("job labels do not select one runner pool")
-        name = self.vm_name(job_id)
+        name = name or self.vm_name(job_id)
         # Cheap checks first, so duplicates and a full pool cost no GitHub call.
         blocked = self._blocked(name, job_id, pool)
         if blocked:
@@ -267,36 +269,42 @@ class Controller:
         attempt: int,
         pool: RunnerPool,
     ) -> StartResult:
-        for zone in zone_order(self._config.zones, job_id, attempt):
-            try:
-                # Every function instance takes this lock between its check and
-                # its insert, so two requests cannot both pass the check.
-                with self._lock.held(deadline):
-                    blocked = self._blocked(name, job_id, pool)
-                    if blocked:
-                        return blocked
-                    operation = self._compute.insert(zone, name, pool.template, {"jit-config": jit_config})
-            except LockTimeout:
-                log.warning("start lock busy; the job waits for the next reconcile pass", vm=name, job_id=job_id)
-                return StartResult.BUSY
-            except AlreadyExists:
-                return StartResult.EXISTS
+        # Every zone with the pool's own machine type first. A fallback type is
+        # used only when no zone has capacity for the one before it.
+        for index, template in enumerate(pool.templates):
+            if index:
+                log.warning("no zone had capacity; trying the fallback machine type", vm=name, template=template)
+            for zone in zone_order(self._config.zones, job_id, attempt):
+                try:
+                    # Every function instance takes this lock between its check and
+                    # its insert, so two requests cannot both pass the check.
+                    with self._lock.held(deadline):
+                        blocked = self._blocked(name, job_id, pool)
+                        if blocked:
+                            return blocked
+                        operation = self._compute.insert(zone, name, template, {"jit-config": jit_config})
+                except LockTimeout:
+                    log.warning("start lock busy; the job waits for the next reconcile pass", vm=name, job_id=job_id)
+                    return StartResult.BUSY
+                except AlreadyExists:
+                    return StartResult.EXISTS
 
-            try:
-                started = self._compute.wait(zone, operation, deadline)
-            except ZoneUnavailable as exc:
-                log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
-                continue
-            if started:
-                log.info("created runner vm", vm=name, zone=zone, job_id=job_id)
-            else:
-                log.info(
-                    "runner vm still starting at the deadline; reconcile retries in another zone if it fails",
-                    vm=name,
-                    zone=zone,
-                    job_id=job_id,
-                )
-            return StartResult.CREATED
+                try:
+                    started = self._compute.wait(zone, operation, deadline)
+                except ZoneUnavailable as exc:
+                    log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
+                    continue
+                if started:
+                    log.info("created runner vm", vm=name, zone=zone, job_id=job_id, template=template)
+                else:
+                    log.info(
+                        "runner vm still starting at the deadline; reconcile retries in another zone if it fails",
+                        vm=name,
+                        zone=zone,
+                        job_id=job_id,
+                        template=template,
+                    )
+                return StartResult.CREATED
 
         log.error("no zone had capacity; the job waits for the next reconcile pass", vm=name, zones=self._config.zones)
         return StartResult.NO_CAPACITY
@@ -353,23 +361,27 @@ class Controller:
         instances = self._compute.list_instances()
         runners = self._runners_by_vm(self._github.list_runners(prefix))
         vm_names = {i["name"] for i in instances}
+        removed: set[str] = set()
 
         for instance in instances:
             name = instance["name"]
             try:
                 if instance["status"] in FINISHED_STATES:
                     self._compute.delete(instance)
+                    removed.add(name)
                     summary["finished"] += 1
                 elif instance["status"] in ACTIVE_STATES and now - created_at(instance) >= self._config.idle_timeout_seconds:
                     vm_runners = runners.get(name, [])
                     if not vm_runners:
                         # Never registered, or its job ended and the VM did not power off.
                         self._compute.delete(instance)
+                        removed.add(name)
                         summary["idle"] += 1
                     elif not any(r["busy"] for r in vm_runners) and all(
                         self._github.delete_runner(r["id"]) for r in vm_runners
                     ):
                         self._compute.delete(instance)
+                        removed.add(name)
                         summary["idle"] += 1
             except Exception as exc:
                 summary["errors"] += 1
@@ -395,11 +407,11 @@ class Controller:
         # leave a heavy job queued until the next pass, and the reverse. Zones
         # with no capacity stop all starts, as before the heavy pool.
         full_pools: set[str] = set()
-        for job in self._missed_jobs(now, vm_names):
+        live = [i for i in instances if i["name"] not in removed]
+        for job, pool, name in self._jobs_without_a_runner(now, live, runners):
             if summary["started"] >= RECONCILE_MAX_STARTS:
                 break
-            pool = pool_for(self._config, job.get("labels", []))
-            if pool is None or pool.name in full_pools:
+            if pool.name in full_pools:
                 continue
             # The webhook made attempt 0. Each reconcile pass since then is one
             # more attempt, so retries move through the zones.
@@ -410,6 +422,7 @@ class Controller:
                     self._monotonic() + RECONCILE_DEADLINE_SECONDS,
                     attempt,
                     job_labels=job.get("labels", []),
+                    name=name,
                 )
             except Exception as exc:
                 summary["errors"] += 1
@@ -425,8 +438,64 @@ class Controller:
         log.info("reconcile pass", **summary)
         return summary
 
-    def _missed_jobs(self, now: float, vm_names: set[str]) -> list[dict[str, Any]]:
-        missed = []
+    def _jobs_without_a_runner(
+        self,
+        now: float,
+        instances: list[dict[str, Any]],
+        runners: Mapping[str, list[dict[str, Any]]],
+    ) -> list[tuple[dict[str, Any], RunnerPool, str]]:
+        """Queued jobs that no VM will take, oldest first, each with its pool and the VM name to start.
+
+        GitHub hands a new runner any queued job with its labels, not the job
+        its VM is named after. So the VMs of a pool are interchangeable: each
+        one whose runner is not busy yet takes one queued job of that pool. A
+        job whose own VM took another job needs a VM under another name.
+        """
+        vm_names = {instance["name"] for instance in instances}
+        spare: dict[str, set[str]] = {}
+        for instance in instances:
+            if instance["status"] in ACTIVE_STATES and not any(r["busy"] for r in runners.get(instance["name"], [])):
+                spare.setdefault(vm_class(instance), set()).add(instance["name"])
+
+        waiting: list[tuple[dict[str, Any], RunnerPool]] = []
+        for job in sorted(self._queued_jobs(), key=lambda queued: parse_timestamp(queued["created_at"])):
+            pool = pool_for(self._config, job.get("labels", []))
+            if pool is None:
+                continue
+            own = self.vm_name(int(job["id"]))
+            young = now - parse_timestamp(job["created_at"]) < QUEUE_GRACE_SECONDS
+            if own in spare.get(pool.name, set()):
+                # Its own VM is still free, and will take this job or another.
+                spare[pool.name].discard(own)
+            elif young and own not in vm_names:
+                # Its webhook may be creating its VM right now.
+                continue
+            else:
+                waiting.append((job, pool))
+
+        result = []
+        for job, pool in waiting:
+            pool_spare = spare.get(pool.name, set())
+            if pool_spare:
+                pool_spare.pop()
+                continue
+            if now - parse_timestamp(job["created_at"]) < QUEUE_GRACE_SECONDS:
+                continue
+            result.append((job, pool, self._free_vm_name(int(job["id"]), vm_names)))
+        return result
+
+    def _free_vm_name(self, job_id: int, vm_names: set[str]) -> str:
+        """The job's own VM name, or the next numbered one when a VM has it."""
+        name = self.vm_name(job_id)
+        number = 2
+        while name in vm_names:
+            name = f"{self.vm_name(job_id)}-{number}"
+            number += 1
+        return name
+
+    def _queued_jobs(self) -> list[dict[str, Any]]:
+        """Queued jobs our runners can take, from the private repositories."""
+        queued = []
         for repository in self._config.repositories:
             try:
                 # The same rule as the webhook: never start a VM for a public repository.
@@ -437,12 +506,5 @@ class Controller:
             except Exception as exc:
                 log.error("could not list queued jobs", repository=repository, detail=str(exc))
                 continue
-            for job in jobs:
-                if not wants_runner(self._config, job.get("labels", [])):
-                    continue
-                if now - parse_timestamp(job["created_at"]) < QUEUE_GRACE_SECONDS:
-                    continue
-                if self.vm_name(int(job["id"])) in vm_names:
-                    continue
-                missed.append(job)
-        return missed
+            queued.extend(job for job in jobs if wants_runner(self._config, job.get("labels", [])))
+        return queued
