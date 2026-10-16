@@ -6,11 +6,11 @@ locals {
   heavy_disk_size_gb = coalesce(var.heavy_disk_size_gb, var.disk_size_gb)
 
   # The controller filters on these labels, so it only ever touches its own VMs.
-  # ghr_class splits the two caps. A VM from before this label counts as light.
+  # Heavy VMs also carry ghr_class = "heavy", which splits the two caps. A VM
+  # without ghr_class counts as light.
   runner_vm_labels = {
     ghr_managed = "true"
     ghr_pool    = var.name_prefix
-    ghr_class   = "light"
   }
 }
 
