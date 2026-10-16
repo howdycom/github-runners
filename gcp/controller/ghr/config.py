@@ -49,10 +49,6 @@ class Config:
     heavy_runner_label: str = "gcp-x64-heavy"
     max_heavy_vms: int = 0
 
-    @property
-    def runner_labels(self) -> tuple[str, ...]:
-        return (*DEFAULT_RUNNER_LABELS, self.runner_label)
-
     def light_pool(self) -> RunnerPool:
         return RunnerPool("light", self.runner_label, self.instance_template, self.max_vms)
 

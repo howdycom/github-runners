@@ -311,6 +311,18 @@ def test_registering_never_deletes_a_runner_another_request_registered(github: F
     assert 1 not in github.deleted
 
 
+def test_start_runner_without_labels_uses_the_light_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+    assert controller(github, compute, **HEAVY).start_runner(1001, deadline=5) == "created"
+    assert github.jit_calls[0][2] == ("self-hosted", "linux", "x64", "gcp-x64")
+    assert compute.templates == ["projects/test-project/global/instanceTemplates/ghr-runner-1"]
+
+
+def test_start_runner_rejects_labels_of_no_single_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+    with pytest.raises(ValueError, match="one runner pool"):
+        controller(github, compute, **HEAVY).start_runner(1001, deadline=5, job_labels=["gcp-x64", "gcp-x64-heavy"])
+    assert github.jit_calls == [] and compute.inserts == []
+
+
 def test_concurrent_requests_for_one_job_keep_the_winners_runner(github: FakeGitHub, compute: FakeCompute) -> None:
     # A second delivery for the same job runs to completion while the first
     # waits for the lock. The first must not touch the second's runner.

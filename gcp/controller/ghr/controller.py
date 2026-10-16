@@ -223,7 +223,7 @@ class Controller:
         capacity failure does not start in the same zone again. job_labels
         selects the pool. Callers that omit them get the standard pool.
         """
-        pool = pool_for(self._config, self._config.runner_labels if job_labels is None else job_labels)
+        pool = self._config.light_pool() if job_labels is None else pool_for(self._config, job_labels)
         if pool is None:
             raise ValueError("job labels do not select one runner pool")
         name = self.vm_name(job_id)
