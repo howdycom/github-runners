@@ -161,6 +161,23 @@ resource "google_storage_bucket_iam_member" "build_source" {
   member = google_service_account.build.member
 }
 
+# Cloud Run functions copy the source into their own staging bucket,
+# gcf-v2-sources-<project number>-<region>, and the build reads it from there.
+# Google creates that bucket with the first function, so the grant is
+# project-level with a condition instead of on the bucket. The condition keeps
+# the build account away from every other bucket, such as Terraform state.
+resource "google_project_iam_member" "build_function_sources" {
+  project = var.project_id
+  role    = "roles/storage.objectViewer"
+  member  = google_service_account.build.member
+
+  condition {
+    title       = "Cloud Run functions source buckets only"
+    description = "Buckets named gcf-v2-sources-*"
+    expression  = "resource.name.startsWith(\"projects/_/buckets/gcf-v2-sources-\")"
+  }
+}
+
 data "archive_file" "controller" {
   type        = "zip"
   source_dir  = "${path.module}/controller"
@@ -238,6 +255,7 @@ resource "google_cloudfunctions2_function" "controller" {
   depends_on = [
     google_project_iam_member.build,
     google_storage_bucket_iam_member.build_source,
+    google_project_iam_member.build_function_sources,
     google_secret_manager_secret_iam_member.controller,
     google_storage_bucket_iam_member.controller_locks,
   ]
