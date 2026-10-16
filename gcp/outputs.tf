@@ -15,7 +15,7 @@ output "heavy_runs_on" {
 
 output "instance_template" {
   description = "Instance template the controller creates runner VMs from."
-  value       = google_compute_instance_template.runner.id
+  value       = google_compute_instance_template.runner["standard"].id
 }
 
 output "subnet" {

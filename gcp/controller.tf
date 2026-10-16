@@ -2,8 +2,8 @@ locals {
   controller_env = {
     GCP_PROJECT             = var.project_id
     ZONES                   = join(",", var.zones)
-    INSTANCE_TEMPLATE       = google_compute_instance_template.runner.id
-    HEAVY_INSTANCE_TEMPLATE = try(google_compute_instance_template.heavy[0].id, "")
+    INSTANCE_TEMPLATE       = google_compute_instance_template.runner["standard"].id
+    HEAVY_INSTANCE_TEMPLATE = try(google_compute_instance_template.runner["heavy"].id, "")
     HEAVY_RUNNER_LABEL      = var.heavy_runner_label
     MAX_HEAVY_VMS           = tostring(var.max_heavy_vms)
     NAME_PREFIX             = var.name_prefix
