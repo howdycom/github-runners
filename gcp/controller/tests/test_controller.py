@@ -114,6 +114,19 @@ def test_reconcile_starts_a_heavy_job_when_the_standard_pool_is_full(github: Fak
     assert compute.templates == [HEAVY["heavy_instance_template"]]
 
 
+def test_a_new_heavy_vm_counts_only_against_the_heavy_cap(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 100, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 102, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+    summary = controller(github, compute, repositories=("app",), max_vms=1, **{**HEAVY, "max_heavy_vms": 1}).reconcile()
+    assert summary["started"] == 2
+    assert {name for _, name, _ in compute.inserts} == {"ghr-100", "ghr-102"}
+
+
 def test_reconcile_stops_all_starts_when_no_zone_has_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
     github.jobs = {
         "app": [

@@ -131,6 +131,17 @@ class FakeCompute:
     full_zones: set[str] = field(default_factory=set)
     fail_insert: Exception | None = None
     race_on_insert: bool = False
+    # The labels of each instance template, as runner.tf sets them.
+    template_labels: dict[str, dict[str, str]] = field(
+        default_factory=lambda: {
+            "projects/test-project/global/instanceTemplates/ghr-runner-1": {"ghr_managed": "true", "ghr_pool": "ghr"},
+            "projects/test-project/global/instanceTemplates/ghr-heavy-1": {
+                "ghr_managed": "true",
+                "ghr_pool": "ghr",
+                "ghr_class": "heavy",
+            },
+        }
+    )
     inserts: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
     templates: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
@@ -151,9 +162,8 @@ class FakeCompute:
         if zone in self.full_zones:
             # Compute Engine accepts the request; the operation fails later.
             return {"zone": zone, "full": True}
-        # The real insert copies ghr_class from the instance template.
-        created = instance(name, "PROVISIONING", zone, age_seconds=0)
-        created["labels"] = {"ghr_class": "heavy" if template.rsplit("/", 1)[-1].find("heavy") >= 0 else "standard"}
+        # The real insert copies the labels of the instance template.
+        created = instance(name, "PROVISIONING", zone, age_seconds=0, labels=dict(self.template_labels[template]))
         self.instances[name] = created
         return {"zone": zone, "full": False}
 
