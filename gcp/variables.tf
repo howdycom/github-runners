@@ -122,13 +122,6 @@ variable "heavy_runner_label" {
   }
 }
 
-check "heavy_label_differs" {
-  assert {
-    condition     = var.heavy_machine_type == null || var.heavy_runner_label != var.runner_label
-    error_message = "heavy_runner_label must differ from runner_label, or a heavy VM can take a standard job."
-  }
-}
-
 variable "heavy_source_image" {
   type        = string
   description = "Boot image for heavy VMs. Defaults to the github-runner-heavy family in var.project_id. Build that family with bake-image.sh before enabling the heavy pool. The image is not tied to the machine type: the same install boots on 2 or 8 vCPUs."

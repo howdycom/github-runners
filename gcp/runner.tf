@@ -125,6 +125,13 @@ resource "google_compute_instance_template" "heavy" {
 
   lifecycle {
     create_before_destroy = true
+
+    # A failed check block only warns. The controller refuses one label for
+    # both pools, so stop the apply here instead.
+    precondition {
+      condition     = var.heavy_runner_label != var.runner_label
+      error_message = "heavy_runner_label must differ from runner_label, or a heavy VM can take a standard job."
+    }
   }
 
   depends_on = [google_project_service.required]
