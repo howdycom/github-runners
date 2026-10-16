@@ -16,6 +16,23 @@ RUNNER_USER=runner
 INSTALLED_MARKER="${GHR_INSTALLED_MARKER:-/etc/ghr-installed}"
 IDLE_POLL_SECONDS="${GHR_IDLE_POLL_SECONDS:-5}"
 BAKE_GRACE_SECONDS=60
+# System Node, as on a GitHub-hosted runner: some jobs run `node` or a global
+# `npm install` without actions/setup-node. Jobs that need another version
+# still use setup-node.
+NODE_VERSION=22.22.3
+
+# Libraries and fonts Playwright installs for Chromium on Ubuntu 24.04
+# (`playwright install --with-deps chromium`, Playwright 1.63.0). GitHub-hosted
+# runners have them preinstalled; jobs here only download the browser.
+PLAYWRIGHT_CHROMIUM_PACKAGES=(
+  libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2
+  libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3
+  libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3
+  libxkbcommon0 libxrandr2
+  xvfb fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6
+  xfonts-cyrillic xfonts-scalable fonts-liberation fonts-ipafont-gothic
+  fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf
+)
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/instance/attributes
 APT_OPTS=(-o DPkg::Lock::Timeout=600 -y --no-install-recommends)
 
@@ -61,10 +78,17 @@ install_runner_host() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get -o DPkg::Lock::Timeout=600 update
   apt-get install "${APT_OPTS[@]}" \
-    build-essential ca-certificates curl git gnupg jq python3 python3-venv sudo unzip zip zstd
+    build-essential ca-certificates curl git gnupg jq python3 python3-venv sudo unzip xz-utils zip zstd \
+    "${PLAYWRIGHT_CHROMIUM_PACKAGES[@]}"
+
+  # GitHub CLI from GitHub's own repository.
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli.gpg
+  chmod a+r /etc/apt/keyrings/githubcli.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+    >/etc/apt/sources.list.d/github-cli.list
 
   # Docker Engine, buildx and compose from Docker's own repository.
-  install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   # shellcheck source=/dev/null
@@ -73,7 +97,7 @@ install_runner_host() {
     >/etc/apt/sources.list.d/docker.list
   apt-get -o DPkg::Lock::Timeout=600 update
   apt-get install "${APT_OPTS[@]}" \
-    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin gh
   cat >/etc/docker/daemon.json <<'JSON'
 {"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
 JSON
@@ -87,8 +111,24 @@ JSON
   echo "${RUNNER_USER} ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-runner
   chmod 0440 /etc/sudoers.d/90-runner
 
+  install_node
   install_runner "${version}" "${sha256}"
   touch "${INSTALLED_MARKER}"
+}
+
+# Installs Node into /usr/local, checked against nodejs.org's SHA-256 list,
+# and lets the runner user install global npm packages there, as on a
+# GitHub-hosted runner.
+install_node() {
+  local tarball="node-v${NODE_VERSION}-linux-x64.tar.xz"
+  local workdir
+  workdir="$(mktemp -d)"
+  curl -fsSL -o "${workdir}/${tarball}" "https://nodejs.org/dist/v${NODE_VERSION}/${tarball}"
+  curl -fsSL -o "${workdir}/SHASUMS256.txt" "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+  (cd "${workdir}" && grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c -)
+  tar -xJf "${workdir}/${tarball}" -C /usr/local --strip-components=1 --no-same-owner
+  rm -rf "${workdir}"
+  chown -R "${RUNNER_USER}:${RUNNER_USER}" /usr/local/lib/node_modules /usr/local/bin
 }
 
 # Downloads the runner and checks it against the pinned SHA-256 (Terraform
