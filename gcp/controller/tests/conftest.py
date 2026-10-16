@@ -65,11 +65,25 @@ def job(job_id: int = 1001, labels: tuple[str, ...] = ("self-hosted", "gcp-x64")
     return {"id": job_id, "labels": list(labels), "runner_name": None, **fields}
 
 
-def instance(name: str, status: str = "RUNNING", zone: str = "zone-a", age_seconds: float = 60) -> dict[str, Any]:
+def instance(
+    name: str,
+    status: str = "RUNNING",
+    zone: str = "zone-a",
+    age_seconds: float = 60,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
     from datetime import datetime, timezone
 
     created = datetime.fromtimestamp(NOW - age_seconds, tz=timezone.utc).isoformat()
-    return {"name": name, "status": status, "zone": f"https://example/zones/{zone}", "creationTimestamp": created}
+    result: dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "zone": f"https://example/zones/{zone}",
+        "creationTimestamp": created,
+    }
+    if labels is not None:
+        result["labels"] = labels
+    return result
 
 
 @dataclass
@@ -117,7 +131,19 @@ class FakeCompute:
     full_zones: set[str] = field(default_factory=set)
     fail_insert: Exception | None = None
     race_on_insert: bool = False
+    # The labels of each instance template, as runner.tf sets them.
+    template_labels: dict[str, dict[str, str]] = field(
+        default_factory=lambda: {
+            "projects/test-project/global/instanceTemplates/ghr-runner-1": {"ghr_managed": "true", "ghr_pool": "ghr"},
+            "projects/test-project/global/instanceTemplates/ghr-heavy-1": {
+                "ghr_managed": "true",
+                "ghr_pool": "ghr",
+                "ghr_class": "heavy",
+            },
+        }
+    )
     inserts: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
+    templates: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
     def list_instances(self) -> list[dict[str, Any]]:
@@ -128,6 +154,7 @@ class FakeCompute:
 
     def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
         self.inserts.append((zone, name, metadata))
+        self.templates.append(template)
         if self.fail_insert:
             raise self.fail_insert
         if self.race_on_insert:
@@ -135,7 +162,9 @@ class FakeCompute:
         if zone in self.full_zones:
             # Compute Engine accepts the request; the operation fails later.
             return {"zone": zone, "full": True}
-        self.instances[name] = instance(name, "PROVISIONING", zone, age_seconds=0)
+        # The real insert copies the labels of the instance template.
+        created = instance(name, "PROVISIONING", zone, age_seconds=0, labels=dict(self.template_labels[template]))
+        self.instances[name] = created
         return {"zone": zone, "full": False}
 
     def wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool:

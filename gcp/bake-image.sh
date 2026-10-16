@@ -7,13 +7,16 @@
 #   subnet: optional. Without it, the script creates a temporary network and
 #     gives the builder a public IP. Pass the stack's `subnet` output instead
 #     when an organization policy forbids external IPs (use_cloud_nat = true).
-#   image-family: defaults to github-runner, the family the stack boots from.
+#   image-family: defaults to github-runner, the family the standard pool boots
+#     from. Pass github-runner-heavy for the heavy pool. The image is the same
+#     install either way. The builder stays a small machine; the 8 vCPU size
+#     is the heavy instance template, not this bake.
 #
 # Run it before the first terraform apply, then monthly for OS and Docker updates.
 set -euo pipefail
 
 if [ "$#" -lt 4 ]; then
-  sed -n '2,12p' "$0"
+  sed -n '2,15p' "$0"
   exit 1
 fi
 

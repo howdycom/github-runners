@@ -43,7 +43,24 @@ Many organizations enforce the policy `constraints/compute.vmExternalIpAccess`, 
 
 ## Machine size
 
-The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted runner for private repositories. `e2-standard-2` costs about 20% less, but its CPU is shared between VMs, so build times vary more. Change `machine_type`, `disk_size_gb` and `disk_type` to fit your jobs.
+Two pools. A job selects one with its `runs-on` label. A VM registers only that pool's label, so a heavy VM cannot take a standard job.
+
+| Pool | Label | Default machine | Image family |
+| --- | --- | --- | --- |
+| Standard | `gcp-x64` | `n2d-standard-2` (2 vCPU, 8 GB) | `github-runner` |
+| Heavy | `gcp-x64-heavy` | off until you set `heavy_machine_type` | `github-runner-heavy` |
+
+`e2-standard-2` costs about 20% less than `n2d-standard-2`, but its CPU is shared between VMs, so build times vary more. For the heavy pool use a dedicated 8 vCPU type, `n2-standard-8` (8 vCPU, 32 GB). `e2-standard-8` shares its CPU and is a poor fit for unit tests.
+
+Each pool has its own cap: `max_vms` and `max_heavy_vms`. Check the regional CPU quota for each machine type separately. N2 and E2 quotas are not the same number.
+
+```yaml
+jobs:
+  test:
+    runs-on: [self-hosted, gcp-x64-heavy]
+  build:
+    runs-on: [self-hosted, gcp-x64]
+```
 
 ## Prerequisites
 
@@ -71,12 +88,20 @@ The default `n2d-standard-2` (2 vCPU, 8 GB, AMD EPYC) matches a GitHub-hosted ru
 
 `gcp/` is a Terraform module. The caller sets the backend and the `google` provider. [`example/`](example) is a minimal root that does both, so you can deploy straight from this repository.
 
-First build the VM image. Runner VMs boot from the newest image in the `github-runner` family, with Docker and the runner already installed. Use the same `runner_version` and `runner_sha256` as the module (see `variables.tf` for the defaults):
+First build the VM image. Standard VMs boot from the newest image in the `github-runner` family, with Docker and the runner already installed. Use the same `runner_version` and `runner_sha256` as the module (see `variables.tf` for the defaults):
 
 ```bash
 cd gcp/example
 ../bake-image.sh <project> <zone> <runner_version> <runner_sha256>
 ```
+
+The heavy pool needs its own family before you set `heavy_machine_type`. The install is the same. The script still builds it on a small `e2-standard-2`. The 8 vCPUs come from the instance template, not from the image.
+
+```bash
+../bake-image.sh <project> <zone> <runner_version> <runner_sha256> "" github-runner-heavy
+```
+
+Bake the heavy family before the apply that creates the heavy template. Terraform resolves the image family when it creates the template.
 
 The script builds the image in a temporary network with a public IP, then deletes the network. If an organization policy forbids external IPs, set `use_cloud_nat = true` in the module call, apply the network first, then pass the stack's subnet as the fifth argument:
 
@@ -85,7 +110,7 @@ terraform apply -var-file=gcp.tfvars -target=module.runners.google_compute_route
 ../bake-image.sh <project> <zone> <runner_version> <runner_sha256> "$(terraform output -raw subnet)"
 ```
 
-Re-run `bake-image.sh` monthly for OS and Docker updates. New VMs use the new image at once.
+Re-run both bake commands monthly for OS and Docker updates. New VMs use the new image in that family at once. A rebuild of `github-runner` does not change heavy VMs, and the reverse.
 
 Then deploy the stack:
 

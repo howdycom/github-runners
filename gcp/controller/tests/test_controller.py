@@ -57,6 +57,89 @@ def test_wants_runner(labels: list[str], expected: bool) -> None:
     assert wants_runner(make_config(), labels) is expected
 
 
+HEAVY = {
+    "heavy_instance_template": "projects/test-project/global/instanceTemplates/ghr-heavy-1",
+    "heavy_runner_label": "gcp-x64-heavy",
+    "max_heavy_vms": 4,
+}
+
+
+def test_each_pool_matches_only_its_own_label() -> None:
+    config = make_config(**HEAVY)
+    assert wants_runner(config, ["self-hosted", "gcp-x64"]) is True
+    assert wants_runner(config, ["self-hosted", "gcp-x64-heavy"]) is True
+    # Both labels would let one VM take the other pool's job.
+    assert wants_runner(config, ["self-hosted", "gcp-x64", "gcp-x64-heavy"]) is False
+    # The heavy label does not exist until the heavy pool is configured.
+    assert wants_runner(make_config(), ["self-hosted", "gcp-x64-heavy"]) is False
+
+
+def test_heavy_job_uses_the_heavy_template_and_label(github: FakeGitHub, compute: FakeCompute) -> None:
+    headers, body = webhook_request("queued", job(1001, labels=("self-hosted", "gcp-x64-heavy")))
+    status, response = controller(github, compute, **HEAVY).handle_webhook(headers, body, SECRET)
+
+    assert (status, response) == (200, {"result": "created"})
+    assert github.jit_calls == [(f"ghr-1001-{new_suffix(1)}", 7, ("self-hosted", "linux", "x64", "gcp-x64-heavy"))]
+    assert compute.inserts[0][1] == "ghr-1001"
+    assert compute.templates == [HEAVY["heavy_instance_template"]]
+
+
+def test_a_full_standard_pool_does_not_block_a_heavy_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)}
+    headers, body = webhook_request("queued", job(1001, labels=("self-hosted", "gcp-x64-heavy")))
+    _, response = controller(github, compute, max_vms=2, **HEAVY).handle_webhook(headers, body, SECRET)
+    assert response == {"result": "created"}
+
+
+def test_a_full_heavy_pool_does_not_block_a_standard_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}", labels={"ghr_class": "heavy"}) for i in range(2)}
+    _, response = controller(github, compute, **{**HEAVY, "max_heavy_vms": 2}).handle_webhook(
+        *webhook_request("queued", job(1001)), SECRET
+    )
+    assert response == {"result": "created"}
+    assert compute.templates == ["projects/test-project/global/instanceTemplates/ghr-runner-1"]
+
+
+def test_reconcile_starts_a_heavy_job_when_the_standard_pool_is_full(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 100, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)}
+    summary = controller(github, compute, repositories=("app",), max_vms=2, **HEAVY).reconcile()
+    assert summary["started"] == 1
+    assert [name for _, name, _ in compute.inserts] == ["ghr-101"]
+    assert compute.templates == [HEAVY["heavy_instance_template"]]
+
+
+def test_a_new_heavy_vm_counts_only_against_the_heavy_cap(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 100, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 102, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+    summary = controller(github, compute, repositories=("app",), max_vms=1, **{**HEAVY, "max_heavy_vms": 1}).reconcile()
+    assert summary["started"] == 2
+    assert {name for _, name, _ in compute.inserts} == {"ghr-100", "ghr-102"}
+
+
+def test_reconcile_stops_all_starts_when_no_zone_has_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 100, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+    compute.full_zones = {"zone-a", "zone-b", "zone-c"}
+    summary = controller(github, compute, repositories=("app",), **HEAVY).reconcile()
+    assert summary["started"] == 0
+    assert {name for _, name, _ in compute.inserts} == {"ghr-100"}
+
+
 def test_zone_order_is_stable_per_job_and_covers_every_zone() -> None:
     zones = ("a", "b", "c")
     assert zone_order(zones, 4) == ["b", "c", "a"]
@@ -239,6 +322,18 @@ def test_registering_never_deletes_a_runner_another_request_registered(github: F
     github.runners["ghr-1001"] = {"id": 1, "name": "ghr-1001", "busy": False, "status": "offline"}
     controller(github, compute).start_runner(1001, deadline=5)
     assert 1 not in github.deleted
+
+
+def test_start_runner_without_labels_uses_the_standard_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+    assert controller(github, compute, **HEAVY).start_runner(1001, deadline=5) == "created"
+    assert github.jit_calls[0][2] == ("self-hosted", "linux", "x64", "gcp-x64")
+    assert compute.templates == ["projects/test-project/global/instanceTemplates/ghr-runner-1"]
+
+
+def test_start_runner_rejects_labels_of_no_single_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+    with pytest.raises(ValueError, match="one runner pool"):
+        controller(github, compute, **HEAVY).start_runner(1001, deadline=5, job_labels=["gcp-x64", "gcp-x64-heavy"])
+    assert github.jit_calls == [] and compute.inserts == []
 
 
 def test_concurrent_requests_for_one_job_keep_the_winners_runner(github: FakeGitHub, compute: FakeCompute) -> None:
@@ -535,10 +630,9 @@ def test_reconcile_stops_starting_vms_when_the_lock_is_busy(github: FakeGitHub, 
 
 
 def test_start_results_serialize_as_their_values() -> None:
-    from ghr.controller import STOP_STARTING, StartResult
+    from ghr.controller import StartResult
 
     assert json.dumps({"result": StartResult.AT_CAPACITY}) == '{"result": "at capacity"}'
-    assert StartResult.CREATED not in STOP_STARTING and StartResult.EXISTS not in STOP_STARTING
 
 
 def test_reconcile_skips_jobs_from_a_public_repository(github: FakeGitHub, compute: FakeCompute) -> None:

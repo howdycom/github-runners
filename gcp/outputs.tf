@@ -4,13 +4,13 @@ output "webhook_url" {
 }
 
 output "runs_on" {
-  description = "Value for a workflow's runs-on to select these runners."
+  description = "Value for a workflow's runs-on to select the standard runners."
   value       = ["self-hosted", var.runner_label]
 }
 
 output "instance_template" {
   description = "Instance template the controller creates runner VMs from."
-  value       = google_compute_instance_template.runner.id
+  value       = google_compute_instance_template.runner["standard"].id
 }
 
 output "subnet" {
