@@ -84,6 +84,7 @@ def test_bakes_in_a_temporary_network_and_removes_it(tmp_path: Path) -> None:
     builder = create.split()[4]  # gcloud compute instances create <name>
     assert f"--subnet={builder}" in create and "--no-address" not in create
     assert f"runner-version=2.337.0,runner-sha256={SHA}" in create
+    assert "--machine-type=e2-standard-2" in create
     assert "--family=github-runner" in first(calls, "images create")
     # Cleanup deletes the builder, then its subnet and network.
     tail = [c.split()[1:4] for c in calls[-3:]]

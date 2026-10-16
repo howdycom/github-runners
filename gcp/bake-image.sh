@@ -28,6 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BUILDER="${FAMILY}-bake-${STAMP}"
 TIMEOUT_SECONDS=1800
+# The image works on any x86 machine type, so build on a widely available one.
+BUILDER_MACHINE_TYPE=e2-standard-2
 POLL_SECONDS="${GHR_POLL_SECONDS:-15}"
 TEMP_NETWORK=""
 BUILDER_CREATED=""
@@ -69,7 +71,7 @@ fi
 gcloud compute instances create "${BUILDER}" \
   --project="${PROJECT}" \
   --zone="${ZONE}" \
-  --machine-type=n2d-standard-2 \
+  --machine-type="${BUILDER_MACHINE_TYPE}" \
   "${network_flags[@]}" \
   --image-family=ubuntu-2404-lts-amd64 \
   --image-project=ubuntu-os-cloud \
