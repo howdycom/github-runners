@@ -33,6 +33,8 @@ The credential behind those calls comes from your local **gh CLI** by default: a
 - No PAT to copy from the GitHub UI — `gh auth login` once, done.
 - By default runners register as **ephemeral**: each job gets a clean environment, and GitHub automatically removes the runner record after the job finishes, so redeploys don't orphan offline runner entries.
 
+**Runner image contents and privileges.** The shared image (`infra/stacks/github-runner/Dockerfile`, Ubuntu 22.04) includes `curl`, `tar`, `zip`/`unzip`, `xz-utils`, `jq`, `git`, `gh`, `make`, `gnupg`, the Docker CLI (with buildx and compose), and `sudo`. The `githubrunner` user has **passwordless sudo** (`/etc/sudoers.d/githubrunner`), matching GitHub-hosted runners, so workflows can `sudo apt-get install` what they need (for example `npx playwright install-deps`). This relies on ephemeral runners. Two caveats: a container *restarts* after each ephemeral job rather than being recreated, so root-level changes outside `_work` can persist into later jobs on the same container until it's recreated (`docker compose up -d --force-recreate`); and jobs already have host-level access through the mounted Docker socket. Only use these runners for trusted repositories.
+
 `start.sh` unsets the credential from the environment before starting the runner listener, so workflow jobs cannot read it. This matters because the listener passes its environment down to every job step — a step running `env` would otherwise print an org-scoped credential into the job log.
 
 Runners come in two tiers, each independently scalable with its own labels and resource limits:
