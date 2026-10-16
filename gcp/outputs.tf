@@ -4,8 +4,13 @@ output "webhook_url" {
 }
 
 output "runs_on" {
-  description = "Value for a workflow's runs-on to select these runners."
+  description = "Value for a workflow's runs-on to select the standard runners."
   value       = ["self-hosted", var.runner_label]
+}
+
+output "heavy_runs_on" {
+  description = "Value for a workflow's runs-on to select the heavy runners. Null when the heavy pool is off."
+  value       = var.heavy_machine_type == null ? null : ["self-hosted", var.heavy_runner_label]
 }
 
 output "instance_template" {

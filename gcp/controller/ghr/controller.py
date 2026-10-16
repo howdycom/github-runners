@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from . import log
 from .compute import ACTIVE_STATES, FINISHED_STATES, AlreadyExists, ZoneUnavailable, created_at
-from .config import Config
+from .config import Config, RunnerPool
 from .github import RunnerNameTaken, verify_signature
 from .lock import LockTimeout
 from .timestamps import parse_timestamp
@@ -79,10 +79,30 @@ class LockPort(Protocol):
     def held(self, deadline: float) -> AbstractContextManager[None]: ...
 
 
+def pool_for(config: Config, job_labels: Iterable[str]) -> RunnerPool | None:
+    """The one pool whose label the job asks for.
+
+    A job that asks for two pool labels matches neither. A heavy runner
+    registers only its own label, so it cannot take a standard job, and a
+    standard runner cannot take a heavy job.
+    """
+    labels = {label.lower() for label in job_labels}
+    matched = [pool for pool in config.pools() if pool.label in labels and labels <= set(pool.runner_labels)]
+    if len(matched) != 1:
+        return None
+    return matched[0]
+
+
 def wants_runner(config: Config, job_labels: Iterable[str]) -> bool:
     """True when every runs-on label of the job is one our runners have."""
-    labels = {label.lower() for label in job_labels}
-    return config.runner_label in labels and labels <= set(config.runner_labels)
+    return pool_for(config, job_labels) is not None
+
+
+def vm_class(instance: dict[str, Any]) -> str:
+    """light or heavy. A VM from before the heavy pool has no class and is light."""
+    labels = instance.get("labels") or {}
+    value = labels.get("ghr_class", "light")
+    return value if isinstance(value, str) else "light"
 
 
 def zone_order(zones: tuple[str, ...], job_id: int, attempt: int = 0) -> list[str]:
@@ -168,7 +188,11 @@ class Controller:
         if repository.get("private") is not True:
             log.warning("ignored job from a public repository", repository=repository.get("full_name"), job_id=job["id"])
             return 202, {"result": "ignored", "reason": "public repository"}
-        result = self.start_runner(int(job["id"]), self._monotonic() + WEBHOOK_DEADLINE_SECONDS)
+        result = self.start_runner(
+            int(job["id"]),
+            self._monotonic() + WEBHOOK_DEADLINE_SECONDS,
+            job_labels=job.get("labels", []),
+        )
         return 200, {"result": result}
 
     def _on_completed(self, job: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -190,21 +214,31 @@ class Controller:
 
     # --- Starting runners -----------------------------------------------------
 
-    def start_runner(self, job_id: int, deadline: float, attempt: int = 0) -> StartResult:
+    def start_runner(
+        self,
+        job_id: int,
+        deadline: float,
+        attempt: int = 0,
+        job_labels: Iterable[str] | None = None,
+    ) -> StartResult:
         """Creates the VM for a queued job. Safe to call more than once per job.
 
         The attempt number rotates the zone order, so a retry after a late
-        capacity failure does not start in the same zone again.
+        capacity failure does not start in the same zone again. job_labels
+        selects the pool. Callers that omit them get the standard pool.
         """
+        pool = pool_for(self._config, self._config.runner_labels if job_labels is None else job_labels)
+        if pool is None:
+            raise ValueError("job labels do not select one runner pool")
         name = self.vm_name(job_id)
         # Cheap checks first, so duplicates and a full pool cost no GitHub call.
-        blocked = self._blocked(name, job_id)
+        blocked = self._blocked(name, job_id, pool)
         if blocked:
             return blocked
 
-        runner_id, jit_config = self._register_runner(name)
+        runner_id, jit_config = self._register_runner(name, pool)
         try:
-            result = self._create_vm(job_id, name, jit_config, deadline, attempt)
+            result = self._create_vm(job_id, name, jit_config, deadline, attempt, pool)
         except Exception:
             self._github.delete_runner(runner_id)
             raise
@@ -212,26 +246,40 @@ class Controller:
             self._github.delete_runner(runner_id)
         return result
 
-    def _blocked(self, name: str, job_id: int) -> StartResult | None:
+    def _blocked(self, name: str, job_id: int, pool: RunnerPool) -> StartResult | None:
         """Why no VM may be created for this job now, or None."""
         instances = self._compute.list_instances()
         if any(instance["name"] == name for instance in instances):
             return StartResult.EXISTS
-        if sum(1 for instance in instances if instance["status"] in ACTIVE_STATES) >= self._config.max_vms:
-            log.warning("at max_vms; the job waits for the next reconcile pass", job_id=job_id, max_vms=self._config.max_vms)
+        active = sum(1 for instance in instances if instance["status"] in ACTIVE_STATES and vm_class(instance) == pool.name)
+        if active >= pool.max_vms:
+            log.warning(
+                "at max_vms; the job waits for the next reconcile pass",
+                job_id=job_id,
+                pool=pool.name,
+                max_vms=pool.max_vms,
+            )
             return StartResult.AT_CAPACITY
         return None
 
-    def _create_vm(self, job_id: int, name: str, jit_config: str, deadline: float, attempt: int) -> StartResult:
+    def _create_vm(
+        self,
+        job_id: int,
+        name: str,
+        jit_config: str,
+        deadline: float,
+        attempt: int,
+        pool: RunnerPool,
+    ) -> StartResult:
         for zone in zone_order(self._config.zones, job_id, attempt):
             try:
                 # Every function instance takes this lock between its check and
                 # its insert, so two requests cannot both pass the check.
                 with self._lock.held(deadline):
-                    blocked = self._blocked(name, job_id)
+                    blocked = self._blocked(name, job_id, pool)
                     if blocked:
                         return blocked
-                    operation = self._compute.insert(zone, name, self._config.instance_template, {"jit-config": jit_config})
+                    operation = self._compute.insert(zone, name, pool.template, {"jit-config": jit_config})
             except LockTimeout:
                 log.warning("start lock busy; the job waits for the next reconcile pass", vm=name, job_id=job_id)
                 return StartResult.BUSY
@@ -257,19 +305,20 @@ class Controller:
         log.error("no zone had capacity; the job waits for the next reconcile pass", vm=name, zones=self._config.zones)
         return StartResult.NO_CAPACITY
 
-    def _register_runner(self, vm: str) -> tuple[int, str]:
+    def _register_runner(self, vm: str, pool: RunnerPool) -> tuple[int, str]:
         """Registers a runner for the VM under a new, unique name.
 
         A unique name means no request ever has to delete a runner by name,
         which could remove a runner that a concurrent request just handed to
-        its VM.
+        its VM. The runner carries only this pool's label, so it cannot take
+        a job that asked for the other pool.
         """
         group_id = self._runner_group_id()
         try:
-            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, self._config.runner_labels)
+            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, pool.runner_labels)
         except RunnerNameTaken:
             # Two random suffixes collided; a new one will not.
-            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, self._config.runner_labels)
+            return self._github.generate_jit_config(f"{vm}-{self._runner_suffix()}", group_id, pool.runner_labels)
 
     def _runner_group_id(self) -> int:
         if self._group_id is not None and self._clock() - self._group_checked_at < RUNNER_GROUP_CACHE_SECONDS:
@@ -346,21 +395,34 @@ class Controller:
                     summary["errors"] += 1
                     log.error("reconcile failed for runner", runner=runner["name"], detail=str(exc))
 
+        # A full pool stops only that pool. A full standard pool must not
+        # leave a heavy job queued until the next pass, and the reverse.
+        full_pools: set[str] = set()
         for job in self._missed_jobs(now, vm_names):
             if summary["started"] >= RECONCILE_MAX_STARTS:
                 break
+            pool = pool_for(self._config, job.get("labels", []))
+            if pool is None or pool.name in full_pools:
+                continue
             # The webhook made attempt 0. Each reconcile pass since then is one
             # more attempt, so retries move through the zones.
             attempt = max(1, int((now - parse_timestamp(job["created_at"])) // RECONCILE_INTERVAL_SECONDS))
             try:
-                result = self.start_runner(int(job["id"]), self._monotonic() + RECONCILE_DEADLINE_SECONDS, attempt)
+                result = self.start_runner(
+                    int(job["id"]),
+                    self._monotonic() + RECONCILE_DEADLINE_SECONDS,
+                    attempt,
+                    job_labels=job.get("labels", []),
+                )
             except Exception as exc:
                 summary["errors"] += 1
                 log.error("reconcile failed to start a runner", job_id=job["id"], detail=str(exc))
                 continue
             if result is StartResult.CREATED:
                 summary["started"] += 1
-            elif result in STOP_STARTING:
+            elif result in {StartResult.AT_CAPACITY, StartResult.NO_CAPACITY}:
+                full_pools.add(pool.name)
+            elif result is StartResult.BUSY:
                 break
 
         log.info("reconcile pass", **summary)

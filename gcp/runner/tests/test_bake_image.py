@@ -92,6 +92,14 @@ def test_bakes_in_a_temporary_network_and_removes_it(tmp_path: Path) -> None:
     assert first(calls, "networks create").split()[4] == builder
 
 
+def test_bakes_a_named_image_family(tmp_path: Path) -> None:
+    result, calls = run_bake(tmp_path, "proj", "us-central1-a", "2.337.0", SHA, "", "github-runner-heavy")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--family=github-runner-heavy" in first(calls, "images create")
+    assert "github-runner-heavy-bake-" in first(calls, "instances create")
+
+
 def test_reads_the_console_while_the_builder_runs(tmp_path: Path) -> None:
     # Compute Engine returns no serial output for a stopped VM, so the marker
     # has to be seen before the builder stops.

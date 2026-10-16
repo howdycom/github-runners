@@ -91,12 +91,64 @@ variable "runner_sha256" {
 
 variable "runner_label" {
   type        = string
-  description = "Custom runner label. Workflows select these runners with runs-on: [self-hosted, <label>]."
+  description = "Custom runner label for the standard pool. Workflows select these runners with runs-on: [self-hosted, <label>]."
   default     = "gcp-x64"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.runner_label))
     error_message = "Use lowercase letters, digits or hyphens."
+  }
+}
+
+variable "heavy_machine_type" {
+  type        = string
+  description = "Machine type of the heavy pool, for CPU-heavy jobs such as unit tests and end-to-end tests. Use an 8 vCPU type such as n2-standard-8 (8 vCPU, 32 GB, dedicated cores). Leave null to run only the standard pool. e2 shares its CPU, so it is a poor fit for this pool."
+  default     = null
+
+  validation {
+    condition     = var.heavy_machine_type == null || can(regex("^[a-z0-9-]+$", var.heavy_machine_type))
+    error_message = "Use a Compute Engine machine type, for example n2-standard-8."
+  }
+}
+
+variable "heavy_runner_label" {
+  type        = string
+  description = "Custom runner label for the heavy pool. Workflows select it with runs-on: [self-hosted, <label>]. It must differ from runner_label so a heavy VM cannot take a standard job."
+  default     = "gcp-x64-heavy"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.heavy_runner_label))
+    error_message = "Use lowercase letters, digits or hyphens."
+  }
+}
+
+check "heavy_label_differs" {
+  assert {
+    condition     = var.heavy_machine_type == null || var.heavy_runner_label != var.runner_label
+    error_message = "heavy_runner_label must differ from runner_label, or a heavy VM can take a standard job."
+  }
+}
+
+variable "heavy_source_image" {
+  type        = string
+  description = "Boot image for heavy VMs. Defaults to the github-runner-heavy family in var.project_id. Build that family with bake-image.sh before enabling the heavy pool. The image is not tied to the machine type: the same install boots on 2 or 8 vCPUs."
+  default     = null
+}
+
+variable "heavy_disk_size_gb" {
+  type        = number
+  description = "Boot disk size of each heavy VM, in GB. Defaults to disk_size_gb."
+  default     = null
+}
+
+variable "max_heavy_vms" {
+  type        = number
+  description = "Maximum number of heavy VMs at once. This cap is separate from max_vms. Check the regional CPU quota for this machine type: max_heavy_vms times its vCPUs."
+  default     = 12
+
+  validation {
+    condition     = var.max_heavy_vms >= 1
+    error_message = "max_heavy_vms must be at least 1."
   }
 }
 

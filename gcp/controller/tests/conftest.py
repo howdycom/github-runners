@@ -65,11 +65,25 @@ def job(job_id: int = 1001, labels: tuple[str, ...] = ("self-hosted", "gcp-x64")
     return {"id": job_id, "labels": list(labels), "runner_name": None, **fields}
 
 
-def instance(name: str, status: str = "RUNNING", zone: str = "zone-a", age_seconds: float = 60) -> dict[str, Any]:
+def instance(
+    name: str,
+    status: str = "RUNNING",
+    zone: str = "zone-a",
+    age_seconds: float = 60,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
     from datetime import datetime, timezone
 
     created = datetime.fromtimestamp(NOW - age_seconds, tz=timezone.utc).isoformat()
-    return {"name": name, "status": status, "zone": f"https://example/zones/{zone}", "creationTimestamp": created}
+    result: dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "zone": f"https://example/zones/{zone}",
+        "creationTimestamp": created,
+    }
+    if labels is not None:
+        result["labels"] = labels
+    return result
 
 
 @dataclass
@@ -118,6 +132,7 @@ class FakeCompute:
     fail_insert: Exception | None = None
     race_on_insert: bool = False
     inserts: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
+    templates: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
     def list_instances(self) -> list[dict[str, Any]]:
@@ -128,6 +143,7 @@ class FakeCompute:
 
     def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
         self.inserts.append((zone, name, metadata))
+        self.templates.append(template)
         if self.fail_insert:
             raise self.fail_insert
         if self.race_on_insert:
@@ -135,7 +151,10 @@ class FakeCompute:
         if zone in self.full_zones:
             # Compute Engine accepts the request; the operation fails later.
             return {"zone": zone, "full": True}
-        self.instances[name] = instance(name, "PROVISIONING", zone, age_seconds=0)
+        # The real insert copies ghr_class from the instance template.
+        created = instance(name, "PROVISIONING", zone, age_seconds=0)
+        created["labels"] = {"ghr_class": "heavy" if template.rsplit("/", 1)[-1].find("heavy") >= 0 else "light"}
+        self.instances[name] = created
         return {"zone": zone, "full": False}
 
     def wait(self, zone: str, operation: dict[str, Any], deadline: float) -> bool:
