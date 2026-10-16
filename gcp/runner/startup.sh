@@ -15,6 +15,7 @@ RUNNER_DIR="${GHR_RUNNER_DIR:-/opt/actions-runner}"
 RUNNER_USER=runner
 INSTALLED_MARKER="${GHR_INSTALLED_MARKER:-/etc/ghr-installed}"
 IDLE_POLL_SECONDS="${GHR_IDLE_POLL_SECONDS:-5}"
+BAKE_GRACE_SECONDS=60
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/instance/attributes
 APT_OPTS=(-o DPkg::Lock::Timeout=600 -y --no-install-recommends)
 
@@ -113,6 +114,10 @@ bake() {
   apt-get clean
   rm -rf /var/lib/apt/lists/* /tmp/*
   log "bake complete"
+  # bake-image.sh reads the serial console only while the VM runs (Compute
+  # Engine returns none for a stopped VM) and polls every 15 seconds, so stay
+  # up long enough for it to see the line above.
+  sleep "${BAKE_GRACE_SECONDS}"
   shutdown_now
 }
 
