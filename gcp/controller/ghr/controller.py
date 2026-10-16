@@ -54,10 +54,6 @@ class StartResult(StrEnum):
     BUSY = "busy"
 
 
-# Results after which the reconcile job stops starting VMs for this pass.
-STOP_STARTING = frozenset({StartResult.AT_CAPACITY, StartResult.NO_CAPACITY, StartResult.BUSY})
-
-
 class GitHubPort(Protocol):
     def runner_group(self, name: str) -> dict[str, Any]: ...
     def generate_jit_config(self, name: str, runner_group_id: int, labels: tuple[str, ...]) -> tuple[int, str]: ...
