@@ -30,14 +30,25 @@ BUILDER="${FAMILY}-bake-${STAMP}"
 TIMEOUT_SECONDS=1800
 POLL_SECONDS="${GHR_POLL_SECONDS:-15}"
 TEMP_NETWORK=""
+BUILDER_CREATED=""
 SERIAL_LOG="$(mktemp)"
+
+# Runs a delete and, if it fails, says what is left and how to remove it.
+remove() {
+  if ! "$@" --quiet >/dev/null 2>&1; then
+    echo "WARNING: could not remove a builder resource. Remove it by hand:"
+    echo "  $* --quiet"
+  fi
+}
 
 cleanup() {
   rm -f "${SERIAL_LOG}"
-  gcloud compute instances delete "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" --quiet >/dev/null 2>&1 || true
+  if [ -n "${BUILDER_CREATED}" ]; then
+    remove gcloud compute instances delete "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}"
+  fi
   if [ -n "${TEMP_NETWORK}" ]; then
-    gcloud compute networks subnets delete "${TEMP_NETWORK}" --project="${PROJECT}" --region="${REGION}" --quiet >/dev/null 2>&1 || true
-    gcloud compute networks delete "${TEMP_NETWORK}" --project="${PROJECT}" --quiet >/dev/null 2>&1 || true
+    remove gcloud compute networks subnets delete "${TEMP_NETWORK}" --project="${PROJECT}" --region="${REGION}"
+    remove gcloud compute networks delete "${TEMP_NETWORK}" --project="${PROJECT}"
   fi
 }
 trap cleanup EXIT
@@ -68,10 +79,27 @@ gcloud compute instances create "${BUILDER}" \
   --no-scopes \
   --metadata="ghr-bake=true,runner-version=${RUNNER_VERSION},runner-sha256=${RUNNER_SHA256}" \
   --metadata-from-file="startup-script=${SCRIPT_DIR}/runner/startup.sh"
+BUILDER_CREATED=1
 
 echo "Waiting for ${BUILDER} to install and power off..."
 deadline=$((SECONDS + TIMEOUT_SECONDS))
-until [ "$(gcloud compute instances describe "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" --format='value(status)')" = "TERMINATED" ]; do
+baked=""
+while true; do
+  status="$(gcloud compute instances describe "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" --format='value(status)')"
+  if [ "${status}" = "TERMINATED" ]; then
+    break
+  fi
+  # Read the console while the VM runs: Compute Engine returns none for a
+  # stopped VM. Save it to a file before searching it; piping gcloud into
+  # grep -q fails under pipefail, because grep stops reading at the match and
+  # gcloud, still writing, exits with SIGPIPE.
+  if [ "${status}" = "RUNNING" ] && gcloud compute instances get-serial-port-output "${BUILDER}" \
+    --project="${PROJECT}" --zone="${ZONE}" >"${SERIAL_LOG}.new" 2>/dev/null; then
+    mv "${SERIAL_LOG}.new" "${SERIAL_LOG}"
+    if grep -q 'ghr: bake complete' "${SERIAL_LOG}"; then
+      baked=1
+    fi
+  fi
   if [ "${SECONDS}" -ge "${deadline}" ]; then
     echo "Timed out. Check the serial console: gcloud compute instances get-serial-port-output ${BUILDER} --zone=${ZONE} --project=${PROJECT}"
     exit 1
@@ -79,12 +107,7 @@ until [ "$(gcloud compute instances describe "${BUILDER}" --project="${PROJECT}"
   sleep "${POLL_SECONDS}"
 done
 
-# Save the serial log before searching it. Piping gcloud into grep -q fails
-# under pipefail: grep stops reading at the match, and gcloud, still writing a
-# log of several megabytes, exits with SIGPIPE.
-gcloud compute instances get-serial-port-output "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" \
-  >"${SERIAL_LOG}" 2>/dev/null || true
-if ! grep -q 'ghr: bake complete' "${SERIAL_LOG}"; then
+if [ -z "${baked}" ]; then
   echo "The builder stopped without finishing the install. Not creating an image."
   echo "Last lines of its serial console:"
   tail -n 40 "${SERIAL_LOG}"
