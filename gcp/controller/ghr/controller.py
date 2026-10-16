@@ -391,8 +391,9 @@ class Controller:
                     summary["errors"] += 1
                     log.error("reconcile failed for runner", runner=runner["name"], detail=str(exc))
 
-        # A full pool stops only that pool. A full standard pool must not
-        # leave a heavy job queued until the next pass, and the reverse.
+        # A pool at its cap stops only that pool. A full standard pool must not
+        # leave a heavy job queued until the next pass, and the reverse. Zones
+        # with no capacity stop all starts, as before the heavy pool.
         full_pools: set[str] = set()
         for job in self._missed_jobs(now, vm_names):
             if summary["started"] >= RECONCILE_MAX_STARTS:
@@ -416,9 +417,9 @@ class Controller:
                 continue
             if result is StartResult.CREATED:
                 summary["started"] += 1
-            elif result in {StartResult.AT_CAPACITY, StartResult.NO_CAPACITY}:
+            elif result is StartResult.AT_CAPACITY:
                 full_pools.add(pool.name)
-            elif result is StartResult.BUSY:
+            elif result in {StartResult.NO_CAPACITY, StartResult.BUSY}:
                 break
 
         log.info("reconcile pass", **summary)

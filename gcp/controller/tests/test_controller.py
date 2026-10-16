@@ -114,6 +114,19 @@ def test_reconcile_starts_a_heavy_job_when_the_standard_pool_is_full(github: Fak
     assert compute.templates == [HEAVY["heavy_instance_template"]]
 
 
+def test_reconcile_stops_all_starts_when_no_zone_has_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "app": [
+            {"id": 100, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+    compute.full_zones = {"zone-a", "zone-b", "zone-c"}
+    summary = controller(github, compute, repositories=("app",), **HEAVY).reconcile()
+    assert summary["started"] == 0
+    assert {name for _, name, _ in compute.inserts} == {"ghr-100"}
+
+
 def test_zone_order_is_stable_per_job_and_covers_every_zone() -> None:
     zones = ("a", "b", "c")
     assert zone_order(zones, 4) == ["b", "c", "a"]
