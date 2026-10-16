@@ -16,7 +16,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 4 ]; then
-  sed -n '2,16p' "$0"
+  sed -n '2,15p' "$0"
   exit 1
 fi
 

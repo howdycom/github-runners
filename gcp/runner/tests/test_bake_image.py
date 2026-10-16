@@ -165,3 +165,5 @@ def test_reports_a_builder_it_could_not_remove(tmp_path: Path) -> None:
 def test_prints_usage_without_enough_arguments(args: tuple[str, ...]) -> None:
     result = subprocess.run(["bash", str(BAKE), *args], capture_output=True, text=True, timeout=30)
     assert result.returncode == 1 and "Usage:" in result.stdout
+    # The usage text is the header comment only, not the code after it.
+    assert "set -euo pipefail" not in result.stdout
