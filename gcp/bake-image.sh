@@ -30,8 +30,10 @@ BUILDER="${FAMILY}-bake-${STAMP}"
 TIMEOUT_SECONDS=1800
 POLL_SECONDS="${GHR_POLL_SECONDS:-15}"
 TEMP_NETWORK=""
+SERIAL_LOG="$(mktemp)"
 
 cleanup() {
+  rm -f "${SERIAL_LOG}"
   gcloud compute instances delete "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" --quiet >/dev/null 2>&1 || true
   if [ -n "${TEMP_NETWORK}" ]; then
     gcloud compute networks subnets delete "${TEMP_NETWORK}" --project="${PROJECT}" --region="${REGION}" --quiet >/dev/null 2>&1 || true
@@ -77,9 +79,15 @@ until [ "$(gcloud compute instances describe "${BUILDER}" --project="${PROJECT}"
   sleep "${POLL_SECONDS}"
 done
 
-if ! gcloud compute instances get-serial-port-output "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" 2>/dev/null \
-  | grep -q 'ghr: bake complete'; then
+# Save the serial log before searching it. Piping gcloud into grep -q fails
+# under pipefail: grep stops reading at the match, and gcloud, still writing a
+# log of several megabytes, exits with SIGPIPE.
+gcloud compute instances get-serial-port-output "${BUILDER}" --project="${PROJECT}" --zone="${ZONE}" \
+  >"${SERIAL_LOG}" 2>/dev/null || true
+if ! grep -q 'ghr: bake complete' "${SERIAL_LOG}"; then
   echo "The builder stopped without finishing the install. Not creating an image."
+  echo "Last lines of its serial console:"
+  tail -n 40 "${SERIAL_LOG}"
   exit 1
 fi
 

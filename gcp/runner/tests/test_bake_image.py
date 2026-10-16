@@ -78,3 +78,20 @@ def test_creates_no_image_when_the_install_failed(tmp_path: Path) -> None:
 def test_prints_usage_without_enough_arguments(args: tuple[str, ...]) -> None:
     result = subprocess.run(["bash", str(BAKE), *args], capture_output=True, text=True, timeout=30)
     assert result.returncode == 1 and "Usage:" in result.stdout
+
+
+def test_finds_the_marker_in_a_large_serial_log(tmp_path: Path) -> None:
+    # A real builder's serial log is megabytes long. grep -q stops reading at the
+    # marker, so a pipe from gcloud into it fails with SIGPIPE under pipefail.
+    serial = "ghr: bake complete\n" + "apt output line\n" * 400_000
+    result, calls = run_bake(tmp_path, "proj", "us-central1-a", "2.337.0", "f" * 64, serial=serial)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any("images create" in call for call in calls)
+
+
+def test_prints_the_end_of_the_serial_log_when_the_install_failed(tmp_path: Path) -> None:
+    result, _ = run_bake(tmp_path, "proj", "us-central1-a", "2.337.0", "f" * 64, serial="ghr: failed at line 60\n")
+
+    assert result.returncode == 1
+    assert "ghr: failed at line 60" in result.stdout
