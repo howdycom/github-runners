@@ -49,8 +49,8 @@ class Config:
     heavy_runner_label: str = "gcp-x64-heavy"
     max_heavy_vms: int = 0
 
-    def light_pool(self) -> RunnerPool:
-        return RunnerPool("light", self.runner_label, self.instance_template, self.max_vms)
+    def standard_pool(self) -> RunnerPool:
+        return RunnerPool("standard", self.runner_label, self.instance_template, self.max_vms)
 
     def heavy_pool(self) -> RunnerPool | None:
         if not self.heavy_instance_template:
@@ -60,8 +60,8 @@ class Config:
     def pools(self) -> tuple[RunnerPool, ...]:
         heavy = self.heavy_pool()
         if heavy is None:
-            return (self.light_pool(),)
-        return (self.light_pool(), heavy)
+            return (self.standard_pool(),)
+        return (self.standard_pool(), heavy)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Config:

@@ -311,7 +311,7 @@ def test_registering_never_deletes_a_runner_another_request_registered(github: F
     assert 1 not in github.deleted
 
 
-def test_start_runner_without_labels_uses_the_light_pool(github: FakeGitHub, compute: FakeCompute) -> None:
+def test_start_runner_without_labels_uses_the_standard_pool(github: FakeGitHub, compute: FakeCompute) -> None:
     assert controller(github, compute, **HEAVY).start_runner(1001, deadline=5) == "created"
     assert github.jit_calls[0][2] == ("self-hosted", "linux", "x64", "gcp-x64")
     assert compute.templates == ["projects/test-project/global/instanceTemplates/ghr-runner-1"]

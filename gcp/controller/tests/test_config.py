@@ -25,7 +25,7 @@ def test_reads_the_environment() -> None:
     config = Config.from_env(ENV)
     assert config.zones == ("zone-a", "zone-b")
     assert config.runner_label == "gcp-x64"
-    assert config.light_pool().runner_labels == ("self-hosted", "linux", "x64", "gcp-x64")
+    assert config.standard_pool().runner_labels == ("self-hosted", "linux", "x64", "gcp-x64")
     assert config.installation_id == 42
     assert config.repositories == ("app", "api")
     assert (config.max_vms, config.idle_timeout_seconds, config.lock_bucket) == (20, 900, "p-ghr-locks")
@@ -40,7 +40,7 @@ def test_heavy_pool_is_off_unless_configured() -> None:
     config = Config.from_env(ENV)
     assert config.heavy_instance_template == ""
     assert config.heavy_pool() is None
-    assert config.pools() == (config.light_pool(),)
+    assert config.pools() == (config.standard_pool(),)
 
 
 def test_reads_the_heavy_pool() -> None:

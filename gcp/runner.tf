@@ -7,7 +7,7 @@ locals {
 
   # The controller filters on these labels, so it only ever touches its own VMs.
   # Heavy VMs also carry ghr_class = "heavy", which splits the two caps. A VM
-  # without ghr_class counts as light.
+  # without ghr_class counts as standard.
   runner_vm_labels = {
     ghr_managed = "true"
     ghr_pool    = var.name_prefix

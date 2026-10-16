@@ -153,7 +153,7 @@ class FakeCompute:
             return {"zone": zone, "full": True}
         # The real insert copies ghr_class from the instance template.
         created = instance(name, "PROVISIONING", zone, age_seconds=0)
-        created["labels"] = {"ghr_class": "heavy" if template.rsplit("/", 1)[-1].find("heavy") >= 0 else "light"}
+        created["labels"] = {"ghr_class": "heavy" if template.rsplit("/", 1)[-1].find("heavy") >= 0 else "standard"}
         self.instances[name] = created
         return {"zone": zone, "full": False}
 

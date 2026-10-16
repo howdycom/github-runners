@@ -95,10 +95,10 @@ def wants_runner(config: Config, job_labels: Iterable[str]) -> bool:
 
 
 def vm_class(instance: dict[str, Any]) -> str:
-    """light or heavy. A VM from before the heavy pool has no class and is light."""
+    """standard or heavy. A VM from before the heavy pool has no class and is standard."""
     labels = instance.get("labels") or {}
-    value = labels.get("ghr_class", "light")
-    return value if isinstance(value, str) else "light"
+    value = labels.get("ghr_class", "standard")
+    return value if isinstance(value, str) else "standard"
 
 
 def zone_order(zones: tuple[str, ...], job_id: int, attempt: int = 0) -> list[str]:
@@ -223,7 +223,7 @@ class Controller:
         capacity failure does not start in the same zone again. job_labels
         selects the pool. Callers that omit them get the standard pool.
         """
-        pool = self._config.light_pool() if job_labels is None else pool_for(self._config, job_labels)
+        pool = self._config.standard_pool() if job_labels is None else pool_for(self._config, job_labels)
         if pool is None:
             raise ValueError("job labels do not select one runner pool")
         name = self.vm_name(job_id)
