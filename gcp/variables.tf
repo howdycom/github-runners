@@ -122,12 +122,6 @@ variable "heavy_runner_label" {
   }
 }
 
-variable "heavy_source_image" {
-  type        = string
-  description = "Boot image for heavy VMs. Defaults to the github-runner-heavy family in var.project_id. Build that family with bake-image.sh before enabling the heavy pool. The image is not tied to the machine type: the same install boots on 2 or 8 vCPUs."
-  default     = null
-}
-
 variable "heavy_disk_size_gb" {
   type        = number
   description = "Boot disk size of each heavy VM, in GB. Defaults to disk_size_gb."

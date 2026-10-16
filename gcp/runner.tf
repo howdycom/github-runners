@@ -2,7 +2,7 @@ locals {
   # The image bake-image.sh builds, unless var.source_image overrides it.
   source_image = coalesce(var.source_image, "projects/${var.project_id}/global/images/family/github-runner")
   # A second family, so rebuilding the standard image does not change heavy VMs.
-  heavy_source_image = coalesce(var.heavy_source_image, "projects/${var.project_id}/global/images/family/github-runner-heavy")
+  heavy_source_image = "projects/${var.project_id}/global/images/family/github-runner-heavy"
   heavy_disk_size_gb = coalesce(var.heavy_disk_size_gb, var.disk_size_gb)
 
   # The controller filters on these labels, so it only ever touches its own VMs.
