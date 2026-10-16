@@ -8,11 +8,6 @@ output "runs_on" {
   value       = ["self-hosted", var.runner_label]
 }
 
-output "heavy_runs_on" {
-  description = "Value for a workflow's runs-on to select the heavy runners. Null when the heavy pool is off."
-  value       = var.heavy_machine_type == null ? null : ["self-hosted", var.heavy_runner_label]
-}
-
 output "instance_template" {
   description = "Instance template the controller creates runner VMs from."
   value       = google_compute_instance_template.runner["standard"].id
