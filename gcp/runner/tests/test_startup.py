@@ -116,6 +116,12 @@ def harness(tmp_path: Path) -> Harness:
     )
 
 
+def test_pins_node_22_23_4_and_the_ubuntu_ca_certificates_floor() -> None:
+    script = STARTUP.read_text()
+    assert "NODE_VERSION=22.23.4" in script
+    assert "20260816ubuntu0.24.04.1" in script
+
+
 def test_powers_off_without_a_jit_config(harness: Harness) -> None:
     result = harness.run()
     assert result.returncode == 0
