@@ -19,7 +19,7 @@ BAKE_GRACE_SECONDS=60
 # System Node, as on a GitHub-hosted runner: some jobs run `node` or a global
 # `npm install` without actions/setup-node. Jobs that need another version
 # still use setup-node.
-NODE_VERSION=22.22.3
+NODE_VERSION=22.23.4
 
 # Libraries and fonts Playwright installs for Chromium on Ubuntu 24.04
 # (`playwright install --with-deps chromium`, Playwright 1.63.0). GitHub-hosted
@@ -80,6 +80,16 @@ install_runner_host() {
   apt-get install "${APT_OPTS[@]}" \
     build-essential ca-certificates curl git gnupg jq python3 python3-venv sudo unzip xz-utils zip zstd \
     "${PLAYWRIGHT_CHROMIUM_PACKAGES[@]}"
+
+  # CVE-2026-111943: Ubuntu 24.04 drops the compromised emSign roots in this
+  # ca-certificates version. apt-get install above takes the archive candidate.
+  # Reject an older package so a stale mirror cannot bake a runner that still
+  # trusts those roots. Python on this VM uses this store.
+  ca_certificates_version="$(dpkg-query -W -f '${Version}' ca-certificates)"
+  if ! dpkg --compare-versions "${ca_certificates_version}" ge "20260816ubuntu0.24.04.1"; then
+    log "ca-certificates ${ca_certificates_version} is older than 20260816ubuntu0.24.04.1"
+    exit 1
+  fi
 
   # GitHub CLI from GitHub's own repository.
   install -m 0755 -d /etc/apt/keyrings

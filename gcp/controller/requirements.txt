@@ -3,3 +3,6 @@ google-auth==2.59.1
 PyJWT[crypto]==2.15.1
 cryptography==50.0.2
 requests==2.34.2
+# requests loads this store in addition to the OS store. 2026.10.19 removes
+# the compromised emSign roots (GHSA-6q48-6c7w-9gw2). 2026.10.18 does not.
+certifi==2026.10.19
