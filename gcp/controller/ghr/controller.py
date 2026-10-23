@@ -111,6 +111,17 @@ def zone_order(zones: tuple[str, ...], job_id: int, attempt: int = 0) -> list[st
     return [*zones[start:], *zones[:start]]
 
 
+def template_order(templates: tuple[str, ...], zones: tuple[str, ...], attempt: int = 0) -> list[str]:
+    """The machine types to try, in order. Each one gets one attempt per zone, then the next one starts.
+
+    The reconcile job does not wait for a create, so it never sees a capacity
+    failure that arrives later. Without this, its retries would only rotate
+    the zones of the first machine type and never reach a fallback.
+    """
+    start = (attempt // len(zones)) % len(templates)
+    return [*templates[start:], *templates[:start]]
+
+
 class Controller:
     def __init__(
         self,
@@ -278,8 +289,9 @@ class Controller:
         wait_for_start: bool = True,
     ) -> StartResult:
         # Every zone with the pool's own machine type first. A fallback type is
-        # used only when no zone has capacity for the one before it.
-        for index, template in enumerate(pool.templates):
+        # used only when no zone has capacity for the one before it, or after
+        # the reconcile job tried the first type once in every zone.
+        for index, template in enumerate(template_order(pool.templates, self._config.zones, attempt)):
             if index:
                 log.warning("no zone had capacity; trying the fallback machine type", vm=name, template=template)
             for zone in zone_order(self._config.zones, job_id, attempt):
