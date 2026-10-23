@@ -283,10 +283,11 @@ resource "google_cloud_run_v2_service_iam_member" "reconcile_scheduler" {
   member   = google_service_account.scheduler.member
 }
 
+# Every minute. A pass starts at most 40 VMs and does not wait for boot.
 resource "google_cloud_scheduler_job" "reconcile" {
   name             = "${var.name_prefix}-reconcile"
   region           = var.region
-  schedule         = "*/2 * * * *"
+  schedule         = "* * * * *"
   attempt_deadline = "120s"
 
   retry_config {

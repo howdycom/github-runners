@@ -13,12 +13,12 @@ The single-host stack in [`infra/`](../infra) does not change.
 5. The VM's startup script runs the runner. The runner takes one job, and the VM powers off.
 6. When GitHub reports the job as completed, the function deletes the VM.
 
-A **reconcile** function runs every two minutes. It:
+A **reconcile** function runs every minute. It:
 
 - deletes VMs that powered off;
 - deletes VMs whose runner never took a job (for example, the job was cancelled while the VM booted);
 - removes runner registrations whose VM no longer exists;
-- creates a VM for any job in `repositories` queued for more than two minutes without one. This covers lost webhooks, zones without capacity and a full pool.
+- creates up to 40 VMs for jobs in `repositories` queued for more than 45 seconds that no free VM will take. It sends each create and does not wait for the VM to boot. This covers lost webhooks, zones without capacity and a full pool.
 
 Compute Engine also deletes every VM after `max_vm_lifetime_hours` (default 6, GitHub's default job timeout), whatever happens to the job or the controller. A job still running then fails as a lost runner, not as a timeout. Set `timeout-minutes` below that limit on jobs that use these runners, so a stuck job fails with a clear timeout and frees its VM sooner.
 

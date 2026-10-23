@@ -20,15 +20,19 @@ from .timestamps import parse_timestamp
 
 # GitHub waits 10 seconds for a webhook response.
 WEBHOOK_DEADLINE_SECONDS = 8.0
-# Time to wait for each VM the reconcile job starts.
+# Time the reconcile job waits for the start lock. It does not wait for the
+# VM to boot. The webhook still waits, up to WEBHOOK_DEADLINE_SECONDS.
 RECONCILE_DEADLINE_SECONDS = 5.0
 # A queued job gets this long for its webhook to start a VM before the
-# reconcile job starts one.
-QUEUE_GRACE_SECONDS = 120
-# The reconcile job starts at most this many VMs per pass.
-RECONCILE_MAX_STARTS = 10
+# reconcile job starts one. Longer than the webhook function timeout (30s),
+# so a request that is still creating a VM is not duplicated.
+QUEUE_GRACE_SECONDS = 45
+# The reconcile job starts at most this many VMs per pass. Each start sends
+# the create and returns. The function timeout is 110s, so 40 leaves time for
+# the cleanup scan and the GitHub calls.
+RECONCILE_MAX_STARTS = 40
 # Cloud Scheduler runs the reconcile job this often (controller.tf).
-RECONCILE_INTERVAL_SECONDS = 120
+RECONCILE_INTERVAL_SECONDS = 60
 RUNNER_GROUP_CACHE_SECONDS = 600
 # Each runner registration is named <vm>-<suffix>. The suffix is the
 # registration time (8 hex digits of Unix seconds) plus 4 random hex digits, so
@@ -217,6 +221,7 @@ class Controller:
         attempt: int = 0,
         job_labels: Iterable[str] | None = None,
         name: str | None = None,
+        wait_for_start: bool = True,
     ) -> StartResult:
         """Creates the VM for a queued job. Safe to call more than once per job.
 
@@ -236,7 +241,9 @@ class Controller:
 
         runner_id, jit_config = self._register_runner(name, pool)
         try:
-            result = self._create_vm(job_id, name, jit_config, deadline, attempt, pool)
+            result = self._create_vm(
+                job_id, name, jit_config, deadline, attempt, pool, wait_for_start=wait_for_start
+            )
         except Exception:
             self._github.delete_runner(runner_id)
             raise
@@ -268,6 +275,7 @@ class Controller:
         deadline: float,
         attempt: int,
         pool: RunnerPool,
+        wait_for_start: bool = True,
     ) -> StartResult:
         # Every zone with the pool's own machine type first. A fallback type is
         # used only when no zone has capacity for the one before it.
@@ -290,7 +298,11 @@ class Controller:
                     return StartResult.EXISTS
 
                 try:
-                    started = self._compute.wait(zone, operation, deadline)
+                    # Reconcile checks the operation once. A create that is still
+                    # running counts as started, so one pass can request many VMs.
+                    # A zone that has already refused the create is tried next.
+                    wait_deadline = deadline if wait_for_start else self._monotonic()
+                    started = self._compute.wait(zone, operation, wait_deadline)
                 except ZoneUnavailable as exc:
                     log.warning("zone has no capacity, trying the next one", vm=name, zone=zone, detail=str(exc))
                     continue
@@ -423,6 +435,7 @@ class Controller:
                     attempt,
                     job_labels=job.get("labels", []),
                     name=name,
+                    wait_for_start=False,
                 )
             except Exception as exc:
                 summary["errors"] += 1
