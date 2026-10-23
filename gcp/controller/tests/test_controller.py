@@ -540,9 +540,33 @@ def missed(job_ids: range) -> dict[str, list[dict[str, object]]]:
 
 
 def test_reconcile_starts_at_most_a_fixed_number_of_vms_per_pass(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.jobs = missed(range(100, 115))
-    summary = controller(github, compute, repositories=("app",), max_vms=50).reconcile()
-    assert summary["started"] == 10
+    github.jobs = missed(range(100, 160))
+    summary = controller(github, compute, repositories=("app",), max_vms=80).reconcile()
+    assert summary["started"] == 40
+
+
+def test_reconcile_checks_the_create_once_and_does_not_wait_for_boot(
+    github: FakeGitHub, compute: FakeCompute
+) -> None:
+    deadlines: list[float] = []
+    real_wait = compute.wait
+
+    def wait(zone: str, operation: dict[str, object], deadline: float) -> bool:
+        deadlines.append(deadline)
+        return real_wait(zone, operation, deadline)
+
+    compute.wait = wait  # type: ignore[method-assign]
+    github.jobs = missed(range(100, 102))
+    ctrl = Controller(
+        make_config(repositories=("app",), max_vms=50),
+        github,
+        compute,
+        FakeLock(),
+        clock=lambda: NOW,
+        monotonic=lambda: 100.0,
+    )
+    summary = ctrl.reconcile()
+    assert summary["started"] == 2 and deadlines == [100.0, 100.0]
 
 
 def test_reconcile_stops_starting_vms_at_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
