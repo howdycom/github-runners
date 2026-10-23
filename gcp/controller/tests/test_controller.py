@@ -7,7 +7,7 @@ import pytest
 from conftest import NOW, SECRET, FakeCompute, FakeGitHub, FakeLock, instance, job, make_config, sign, webhook_request
 
 from ghr.compute import ComputeError
-from ghr.controller import Controller, UnsafeRunnerGroup, wants_runner, zone_order
+from ghr.controller import Controller, UnsafeRunnerGroup, template_order, wants_runner, zone_order
 
 
 # Runner name suffixes: registration time in 8 hex digits, then 4 random ones.
@@ -823,6 +823,39 @@ def test_no_capacity_for_any_machine_type_leaves_the_job_for_reconcile(github: F
 
     assert response == {"result": "no capacity"}
     assert len(compute.inserts) == 6 and github.runners == {}
+
+
+def test_reconcile_reaches_the_fallback_after_late_capacity_failures_in_every_zone(
+    github: FakeGitHub, compute: FakeCompute
+) -> None:
+    # Reconcile does not wait for a create, so it does not see a capacity
+    # failure that arrives later. The VM never appears and the job stays queued.
+    compute.wait = lambda *args: False  # type: ignore[method-assign]
+    # Queued a minute ago: the webhook made attempt 0, so the passes make 1, 2 and 3.
+    github.jobs = {"app": [{"id": 11, "labels": list(HEAVY_LABELS), "created_at": "2027-01-15T07:59:00Z"}]}
+    for elapsed in (0, 60, 120):
+        compute.instances.clear()
+        github.runners.clear()
+        Controller(
+            make_config(repositories=("app",), **HEAVY_WITH_FALLBACK),
+            github,
+            compute,
+            FakeLock(),
+            clock=lambda: NOW + elapsed,
+            monotonic=lambda: 0.0,
+        ).reconcile()
+    # The webhook and the first two passes tried the first type in all three zones.
+    assert compute.templates == [HEAVY["heavy_instance_template"]] * 2 + [FALLBACK]
+
+
+def test_template_order_moves_to_the_next_type_after_one_attempt_per_zone() -> None:
+    zones = ("zone-a", "zone-b", "zone-c")
+    assert template_order(("e2", "n2"), zones, 0) == ["e2", "n2"]
+    assert template_order(("e2", "n2"), zones, 2) == ["e2", "n2"]
+    assert template_order(("e2", "n2"), zones, 3) == ["n2", "e2"]
+    # Back to the first type, which may have capacity again.
+    assert template_order(("e2", "n2"), zones, 6) == ["e2", "n2"]
+    assert template_order(("e2",), zones, 5) == ["e2"]
 
 
 def test_the_standard_pool_has_no_fallback(github: FakeGitHub, compute: FakeCompute) -> None:

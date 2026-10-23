@@ -52,7 +52,7 @@ Two pools. A job selects one with its `runs-on` label. A VM registers only that 
 
 `e2-standard-2` costs about 20% less than `n2d-standard-2`, but build times vary more. For the heavy pool use an 8 vCPU type: `e2-standard-8` costs less, and `n2-standard-8` is faster per core. In `us-central1`, `n2` and `n2d` have run out of capacity in some zones while `e2` still had it.
 
-`heavy_fallback_machine_types` lists other machine types for the heavy pool. The controller tries every zone with `heavy_machine_type` first, and moves to the next type only when no zone has capacity for it. Each type gets its own instance template with the heavy image and label.
+`heavy_fallback_machine_types` lists other machine types for the heavy pool. The controller tries every zone with `heavy_machine_type` first, and moves to the next type only when no zone has capacity for it. The reconcile check does not wait for a create, so it cannot see a capacity failure that arrives later. After it has tried a type once in every zone, it starts with the next type. Each type gets its own instance template with the heavy image and label.
 
 ```hcl
 heavy_machine_type           = "e2-standard-8"
