@@ -4,7 +4,7 @@ import itertools
 import json
 
 import pytest
-from conftest import NOW, SECRET, FakeCompute, FakeGitHub, FakeLock, instance, job, make_config, sign, webhook_request
+from conftest import NOW, SECRET, FakeCompute, FakeGitHub, instance, job, make_config, sign, webhook_request
 
 from ghr.compute import ComputeError
 from ghr.controller import Controller, UnsafeRunnerGroup, template_order, wants_runner, zone_order
@@ -23,12 +23,11 @@ def suffixes() -> object:
     return lambda: new_suffix(next(counter))
 
 
-def controller(github: FakeGitHub, compute: FakeCompute, lock: FakeLock | None = None, **config: object) -> Controller:
+def controller(github: FakeGitHub, compute: FakeCompute, **config: object) -> Controller:
     return Controller(
         make_config(**config),
         github,
         compute,
-        lock or FakeLock(),
         clock=lambda: NOW,
         monotonic=lambda: 0.0,
         runner_suffix=suffixes(),  # type: ignore[arg-type]
@@ -60,7 +59,6 @@ def test_wants_runner(labels: list[str], expected: bool) -> None:
 HEAVY = {
     "heavy_instance_template": "projects/test-project/global/instanceTemplates/ghr-heavy-1",
     "heavy_runner_label": "gcp-x64-heavy",
-    "max_heavy_vms": 4,
 }
 
 
@@ -84,37 +82,7 @@ def test_heavy_job_uses_the_heavy_template_and_label(github: FakeGitHub, compute
     assert compute.templates == [HEAVY["heavy_instance_template"]]
 
 
-def test_a_full_standard_pool_does_not_block_a_heavy_job(github: FakeGitHub, compute: FakeCompute) -> None:
-    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)}
-    headers, body = webhook_request("queued", job(1001, labels=("self-hosted", "gcp-x64-heavy")))
-    _, response = controller(github, compute, max_vms=2, **HEAVY).handle_webhook(headers, body, SECRET)
-    assert response == {"result": "created"}
-
-
-def test_a_full_heavy_pool_does_not_block_a_standard_job(github: FakeGitHub, compute: FakeCompute) -> None:
-    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}", labels={"ghr_class": "heavy"}) for i in range(2)}
-    _, response = controller(github, compute, **{**HEAVY, "max_heavy_vms": 2}).handle_webhook(
-        *webhook_request("queued", job(1001)), SECRET
-    )
-    assert response == {"result": "created"}
-    assert compute.templates == ["projects/test-project/global/instanceTemplates/ghr-runner-1"]
-
-
-def test_reconcile_starts_a_heavy_job_when_the_standard_pool_is_full(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.jobs = {
-        "app": [
-            {"id": 100, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
-            {"id": 101, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
-        ]
-    }
-    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)}
-    summary = controller(github, compute, repositories=("app",), max_vms=2, **HEAVY).reconcile()
-    assert summary["started"] == 1
-    assert [name for _, name, _ in compute.inserts] == ["ghr-101"]
-    assert compute.templates == [HEAVY["heavy_instance_template"]]
-
-
-def test_a_new_heavy_vm_counts_only_against_the_heavy_cap(github: FakeGitHub, compute: FakeCompute) -> None:
+def test_reconcile_starts_every_queued_job_of_both_pools(github: FakeGitHub, compute: FakeCompute) -> None:
     github.jobs = {
         "app": [
             {"id": 100, "labels": ["gcp-x64-heavy"], "created_at": "2027-01-15T07:55:00Z"},
@@ -122,9 +90,9 @@ def test_a_new_heavy_vm_counts_only_against_the_heavy_cap(github: FakeGitHub, co
             {"id": 102, "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
         ]
     }
-    summary = controller(github, compute, repositories=("app",), max_vms=1, **{**HEAVY, "max_heavy_vms": 1}).reconcile()
-    assert summary["started"] == 2
-    assert {name for _, name, _ in compute.inserts} == {"ghr-100", "ghr-102"}
+    summary = controller(github, compute, repositories=("app",), **HEAVY).reconcile()
+    assert summary["started"] == 3
+    assert {name for _, name, _ in compute.inserts} == {"ghr-100", "ghr-101", "ghr-102"}
 
 
 def test_reconcile_stops_all_starts_when_no_zone_has_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
@@ -178,7 +146,7 @@ def test_reconcile_moves_to_the_next_zone_on_each_pass(github: FakeGitHub, compu
     for elapsed in (0, 120, 240):
         compute.instances.clear()
         ctrl = Controller(
-            make_config(repositories=("app",)), github, compute, FakeLock(), clock=lambda: NOW + elapsed, monotonic=lambda: 0.0
+            make_config(repositories=("app",)), github, compute, clock=lambda: NOW + elapsed, monotonic=lambda: 0.0
         )
         ctrl.reconcile()
         first_zones.append(compute.inserts[-1][0])
@@ -288,16 +256,11 @@ def test_concurrent_creation_keeps_one_runner(github: FakeGitHub, compute: FakeC
     assert github.runners == {}
 
 
-def test_respects_max_vms(github: FakeGitHub, compute: FakeCompute) -> None:
-    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)}
-    _, response = controller(github, compute, max_vms=2).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
-    assert response == {"result": "at capacity"}
-    assert github.jit_calls == []
-
-
-def test_finished_vms_do_not_count_toward_max_vms(github: FakeGitHub, compute: FakeCompute) -> None:
-    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}", "TERMINATED") for i in range(2)}
-    _, response = controller(github, compute, max_vms=2).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
+def test_creates_a_vm_however_many_already_run(github: FakeGitHub, compute: FakeCompute) -> None:
+    # PR CI on 2026-10-26: jobs waited minutes for a VM while the pool had room.
+    # The controller has no cap; the CPU quota is the only limit.
+    compute.instances = {f"ghr-{i}": instance(f"ghr-{i}") for i in range(200)}
+    _, response = controller(github, compute).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
     assert response == {"result": "created"}
 
 
@@ -337,17 +300,24 @@ def test_start_runner_rejects_labels_of_no_single_pool(github: FakeGitHub, compu
 
 
 def test_concurrent_requests_for_one_job_keep_the_winners_runner(github: FakeGitHub, compute: FakeCompute) -> None:
-    # A second delivery for the same job runs to completion while the first
-    # waits for the lock. The first must not touch the second's runner.
-    lock = FakeLock()
-    second = controller(github, compute, lock)
-    first = controller(github, compute, lock)
-    lock.on_acquire = lambda: (setattr(lock, "on_acquire", None), second.start_runner(1001, deadline=5))
+    # A second delivery for the same job runs to completion between the first's
+    # check and its insert. The first must not touch the second's runner.
+    second = controller(github, compute)
+    first = controller(github, compute)
+    real_insert = compute.insert
+
+    def insert(zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, object]:
+        compute.insert = real_insert  # type: ignore[method-assign]
+        second.start_runner(1001, deadline=5)
+        return real_insert(zone, name, template, metadata)
+
+    compute.insert = insert  # type: ignore[method-assign]
 
     assert first.start_runner(1001, deadline=5) == "exists"
-    assert len(compute.inserts) == 1
+    assert list(compute.instances) == ["ghr-1001"]
     surviving = [name for name in github.runners]
     assert len(surviving) == 1
+    # The second request's insert is the one Compute Engine accepted.
     assert compute.inserts[0][2] == {"jit-config": f"jit-{surviving[0]}"}
 
 
@@ -541,7 +511,7 @@ def missed(job_ids: range) -> dict[str, list[dict[str, object]]]:
 
 def test_reconcile_starts_at_most_a_fixed_number_of_vms_per_pass(github: FakeGitHub, compute: FakeCompute) -> None:
     github.jobs = missed(range(100, 160))
-    summary = controller(github, compute, repositories=("app",), max_vms=80).reconcile()
+    summary = controller(github, compute, repositories=("app",)).reconcile()
     assert summary["started"] == 40
 
 
@@ -558,21 +528,14 @@ def test_reconcile_checks_the_create_once_and_does_not_wait_for_boot(
     compute.wait = wait  # type: ignore[method-assign]
     github.jobs = missed(range(100, 102))
     ctrl = Controller(
-        make_config(repositories=("app",), max_vms=50),
+        make_config(repositories=("app",)),
         github,
         compute,
-        FakeLock(),
         clock=lambda: NOW,
         monotonic=lambda: 100.0,
     )
     summary = ctrl.reconcile()
     assert summary["started"] == 2 and deadlines == [100.0, 100.0]
-
-
-def test_reconcile_stops_starting_vms_at_capacity(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.jobs = missed(range(100, 105))
-    summary = controller(github, compute, repositories=("app",), max_vms=2).reconcile()
-    assert summary["started"] == 2 and len(compute.inserts) == 2
 
 
 def test_reconcile_continues_after_a_failed_start(github: FakeGitHub, compute: FakeCompute) -> None:
@@ -609,54 +572,10 @@ def test_reconcile_moves_on_when_the_webhook_created_the_vm_meanwhile(github: Fa
     assert summary["started"] == 1 and [name for _, name, _ in compute.inserts] == ["ghr-101"]
 
 
-# --- Start lock ---------------------------------------------------------------
-
-
-def test_checks_capacity_again_under_the_lock(github: FakeGitHub, compute: FakeCompute) -> None:
-    # Another function instance filled the pool after this request's first
-    # check and before it took the lock.
-    def other_instance_fills_the_pool() -> None:
-        compute.instances.update({f"ghr-{i}": instance(f"ghr-{i}") for i in range(2)})
-
-    lock = FakeLock(on_acquire=other_instance_fills_the_pool)
-    _, response = controller(github, compute, lock, max_vms=2).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
-
-    assert response == {"result": "at capacity"}
-    assert compute.inserts == []
-    assert github.runners == {}
-
-
-def test_checks_for_the_vm_again_under_the_lock(github: FakeGitHub, compute: FakeCompute) -> None:
-    # A duplicate delivery created the VM, in any zone, after the first check.
-    lock = FakeLock(on_acquire=lambda: compute.instances.update({"ghr-1001": instance("ghr-1001", zone="zone-c")}))
-    _, response = controller(github, compute, lock).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
-
-    assert response == {"result": "exists"}
-    assert compute.inserts == []
-    assert github.runners == {}
-
-
-def test_creates_each_vm_under_the_lock(github: FakeGitHub, compute: FakeCompute, lock: FakeLock) -> None:
-    controller(github, compute, lock).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
-    assert lock.times_held == 1 and len(compute.inserts) == 1
-
-
-def test_a_busy_lock_leaves_the_job_for_reconcile(github: FakeGitHub, compute: FakeCompute) -> None:
-    _, response = controller(github, compute, FakeLock(timeout=True)).handle_webhook(*webhook_request("queued", job(1001)), SECRET)
-    assert response == {"result": "busy"}
-    assert compute.inserts == [] and github.runners == {}
-
-
-def test_reconcile_stops_starting_vms_when_the_lock_is_busy(github: FakeGitHub, compute: FakeCompute) -> None:
-    github.jobs = missed(range(100, 103))
-    summary = controller(github, compute, FakeLock(timeout=True), repositories=("app",)).reconcile()
-    assert summary["started"] == 0 and github.jit_calls[1:] == []
-
-
 def test_start_results_serialize_as_their_values() -> None:
     from ghr.controller import StartResult
 
-    assert json.dumps({"result": StartResult.AT_CAPACITY}) == '{"result": "at capacity"}'
+    assert json.dumps({"result": StartResult.NO_CAPACITY}) == '{"result": "no capacity"}'
 
 
 def test_reconcile_skips_jobs_from_a_public_repository(github: FakeGitHub, compute: FakeCompute) -> None:
@@ -680,7 +599,7 @@ def test_reconcile_keeps_a_fresh_runner_still_waiting_for_its_vm(github: FakeGit
 
 
 def test_new_runner_names_carry_the_registration_time(github: FakeGitHub, compute: FakeCompute) -> None:
-    ctrl = Controller(make_config(), github, compute, FakeLock(), clock=lambda: NOW, monotonic=lambda: 0.0)
+    ctrl = Controller(make_config(), github, compute, clock=lambda: NOW, monotonic=lambda: 0.0)
     ctrl.start_runner(1001, deadline=5)
     name = github.jit_calls[0][0]
     assert name.startswith(f"ghr-1001-{int(NOW):08x}") and len(name.rsplit("-", 1)[1]) == 12
@@ -840,7 +759,6 @@ def test_reconcile_reaches_the_fallback_after_late_capacity_failures_in_every_zo
             make_config(repositories=("app",), **HEAVY_WITH_FALLBACK),
             github,
             compute,
-            FakeLock(),
             clock=lambda: NOW + elapsed,
             monotonic=lambda: 0.0,
         ).reconcile()

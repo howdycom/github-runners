@@ -4,8 +4,6 @@ import hashlib
 import hmac
 import json
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ghr.compute import AlreadyExists, ZoneUnavailable  # noqa: E402
 from ghr.config import Config  # noqa: E402
 from ghr.github import RunnerNameTaken  # noqa: E402
-from ghr.lock import LockTimeout  # noqa: E402
 
 SECRET = b"webhook-secret"
 NOW = 1_800_000_000.0
@@ -35,9 +32,7 @@ def make_config(**overrides: Any) -> Config:
         "app_id": "1",
         "installation_id": 42,
         "repositories": (),
-        "max_vms": 5,
         "idle_timeout_seconds": 900,
-        "lock_bucket": "test-locks",
     }
     values.update(overrides)
     return Config(**values)
@@ -164,7 +159,8 @@ class FakeCompute:
         self.templates.append(template)
         if self.fail_insert:
             raise self.fail_insert
-        if self.race_on_insert:
+        # Compute Engine refuses a second VM with the same name.
+        if self.race_on_insert or name in self.instances:
             raise AlreadyExists(name)
         if zone in self.full_zones or template in self.full_templates:
             # Compute Engine accepts the request; the operation fails later.
@@ -184,24 +180,6 @@ class FakeCompute:
         self.instances.pop(inst["name"], None)
 
 
-@dataclass
-class FakeLock:
-    """Records how often the lock was held. on_acquire simulates other instances."""
-
-    times_held: int = 0
-    timeout: bool = False
-    on_acquire: Any = None
-
-    @contextmanager
-    def held(self, deadline: float) -> Iterator[None]:
-        if self.timeout:
-            raise LockTimeout("busy")
-        if self.on_acquire:
-            self.on_acquire()
-        self.times_held += 1
-        yield
-
-
 @pytest.fixture
 def github() -> FakeGitHub:
     return FakeGitHub()
@@ -211,7 +189,3 @@ def github() -> FakeGitHub:
 def compute() -> FakeCompute:
     return FakeCompute()
 
-
-@pytest.fixture
-def lock() -> FakeLock:
-    return FakeLock()

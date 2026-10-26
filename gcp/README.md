@@ -18,7 +18,7 @@ A **reconcile** function runs every minute. It:
 - deletes VMs that powered off;
 - deletes VMs whose runner never took a job (for example, the job was cancelled while the VM booted);
 - removes runner registrations whose VM no longer exists;
-- creates up to 40 VMs for jobs in `repositories` queued for more than 45 seconds that no free VM will take. It sends each create and does not wait for the VM to boot. This covers lost webhooks, zones without capacity and a full pool.
+- creates up to 40 VMs for jobs in `repositories` queued for more than 45 seconds that no free VM will take. It sends each create and does not wait for the VM to boot. This covers lost webhooks, zones without capacity and a full CPU quota.
 
 Compute Engine also deletes every VM after `max_vm_lifetime_hours` (default 6, GitHub's default job timeout), whatever happens to the job or the controller. A job still running then fails as a lost runner, not as a timeout. Set `timeout-minutes` below that limit on jobs that use these runners, so a stuck job fails with a clear timeout and frees its VM sooner.
 
@@ -59,7 +59,7 @@ heavy_machine_type           = "e2-standard-8"
 heavy_fallback_machine_types = ["n2-standard-8"]
 ```
 
-Each pool has its own cap: `max_vms` and `max_heavy_vms`. A fallback VM counts against `max_heavy_vms`. Check the regional CPU quota for each machine type separately. N2 and E2 quotas are not the same number.
+No pool has a cap: every queued job gets a VM at once. The regional CPU quota is the only limit, so check it for each machine type separately. N2 and E2 quotas are not the same number.
 
 The VMs of one pool are interchangeable. GitHub gives a new runner any queued job with its label, not the job its VM is named after. So reconcile counts each VM whose runner is not busy as a free runner for one queued job of its pool, and starts a VM for each queued job left over. A job whose own VM took another job gets a VM named `<prefix>-<job id>-2`.
 
@@ -81,7 +81,7 @@ jobs:
 
    Install it on the organization, and note the App ID and the installation ID. Generate a private key.
 2. **Runner group.** Create a runner group that public repositories cannot use, and limit it to the repositories that use these runners. The controller refuses to register runners in a group that allows public repositories.
-3. **GCP project.** Use a project dedicated to CI. Check the regional CPU quota: `max_vms` × the machine's vCPUs.
+3. **GCP project.** Use a project dedicated to CI. Check the regional CPU quota: it limits how many VMs run at once.
 4. **Secrets.** Store the App private key and the webhook secret in Secret Manager in that project:
 
    ```bash
@@ -165,7 +165,7 @@ Ubuntu 24.04 with Docker Engine, buildx and Compose, git, curl, jq, zip, zstd, P
 - **A zone without capacity.** The function tries the next zone. If every zone is full, the reconcile job retries.
 - **A runner that takes another job.** Any idle runner with the label can take any queued job. Every queued job still gets a VM, so the counts stay equal.
 - **Failures while creating a VM.** The function removes the runner registration it created, so no orphan runner is left behind.
-- **Limits.** The function stops creating VMs at `max_vms`; the reconcile job starts the rest when VMs free up. Every function instance checks the count and sends the create request while holding one lock, an object in a GCS bucket, so concurrent webhooks cannot exceed the limit.
+- **Limits.** The controller has no VM cap and no lock: each webhook creates its VM at once, in parallel with the others. A create past the regional CPU quota fails, and the reconcile job tries again on its next pass.
 - **Removing an idle runner.** Before deleting an idle VM, the controller removes its runner registration and deletes the VM only if GitHub accepts. A runner that takes a job in the same instant can still lose it; the job then fails and needs a re-run.
 
 ## Costs

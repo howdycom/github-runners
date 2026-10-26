@@ -10,7 +10,6 @@ locals {
       if var.heavy_machine_type != null
     ])
     HEAVY_RUNNER_LABEL     = var.heavy_runner_label
-    MAX_HEAVY_VMS          = tostring(var.max_heavy_vms)
     NAME_PREFIX            = var.name_prefix
     RUNNER_LABEL           = var.runner_label
     RUNNER_GROUP           = var.runner_group
@@ -18,9 +17,7 @@ locals {
     GITHUB_APP_ID          = var.github_app_id
     GITHUB_INSTALLATION_ID = var.github_app_installation_id
     REPOSITORIES           = join(",", var.repositories)
-    MAX_VMS                = tostring(var.max_vms)
     IDLE_TIMEOUT_SECONDS   = tostring(var.idle_timeout_minutes * 60)
-    LOCK_BUCKET            = google_storage_bucket.locks.name
   }
 
   controller_secrets = {
@@ -94,24 +91,6 @@ resource "google_secret_manager_secret_iam_member" "controller" {
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = google_service_account.controller.member
-}
-
-# Holds the lock object that function instances take between checking the
-# VM count and creating a VM, so concurrent webhooks cannot exceed max_vms.
-resource "google_storage_bucket" "locks" {
-  name                        = "${var.project_id}-${var.name_prefix}-locks"
-  location                    = var.region
-  uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
-  force_destroy               = true
-
-  depends_on = [google_project_service.required]
-}
-
-resource "google_storage_bucket_iam_member" "controller_locks" {
-  bucket = google_storage_bucket.locks.name
-  role   = "roles/storage.objectUser"
-  member = google_service_account.controller.member
 }
 
 # Builds the function source. A dedicated account avoids depending on the
@@ -206,10 +185,12 @@ locals {
   controller_functions = {
     # Receives GitHub's workflow_job webhooks. It is reachable from the
     # internet, because GitHub has to reach it; every request must carry a
-    # valid HMAC signature made with the webhook secret.
+    # valid HMAC signature made with the webhook secret. Each request waits up
+    # to 8 seconds for its VM, and GitHub does not resend a failed delivery,
+    # so a burst of queued jobs needs one instance per job.
     webhook = {
       timeout_seconds    = 30
-      max_instance_count = 10
+      max_instance_count = 100
     }
     # Cleans up finished and idle VMs and starts VMs for queued jobs whose
     # webhook was lost. Only the scheduler's service account can call it. One
@@ -265,7 +246,6 @@ resource "google_cloudfunctions2_function" "controller" {
     google_storage_bucket_iam_member.build_source,
     google_project_iam_member.build_function_sources,
     google_secret_manager_secret_iam_member.controller,
-    google_storage_bucket_iam_member.controller_locks,
   ]
 }
 

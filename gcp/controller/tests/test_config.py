@@ -15,9 +15,7 @@ ENV = {
     "GITHUB_APP_ID": "1",
     "GITHUB_INSTALLATION_ID": "42",
     "REPOSITORIES": "app,api",
-    "MAX_VMS": "20",
     "IDLE_TIMEOUT_SECONDS": "900",
-    "LOCK_BUCKET": "p-ghr-locks",
 }
 
 
@@ -28,7 +26,7 @@ def test_reads_the_environment() -> None:
     assert config.standard_pool().runner_labels == ("self-hosted", "linux", "x64", "gcp-x64")
     assert config.installation_id == 42
     assert config.repositories == ("app", "api")
-    assert (config.max_vms, config.idle_timeout_seconds, config.lock_bucket) == (20, 900, "p-ghr-locks")
+    assert config.idle_timeout_seconds == 900
 
 
 def test_requires_a_zone() -> None:
@@ -49,7 +47,6 @@ def test_reads_the_heavy_pool() -> None:
             **ENV,
             "HEAVY_INSTANCE_TEMPLATE": "projects/p/global/instanceTemplates/heavy",
             "HEAVY_RUNNER_LABEL": "GCP-X64-HEAVY",
-            "MAX_HEAVY_VMS": "12",
         }
     )
     heavy = config.heavy_pool()
@@ -57,7 +54,6 @@ def test_reads_the_heavy_pool() -> None:
     assert heavy.name == "heavy"
     assert heavy.label == "gcp-x64-heavy"
     assert heavy.template == "projects/p/global/instanceTemplates/heavy"
-    assert heavy.max_vms == 12
     assert heavy.runner_labels == ("self-hosted", "linux", "x64", "gcp-x64-heavy")
 
 
@@ -68,19 +64,6 @@ def test_rejects_one_label_for_both_pools() -> None:
                 **ENV,
                 "HEAVY_INSTANCE_TEMPLATE": "projects/p/global/instanceTemplates/heavy",
                 "HEAVY_RUNNER_LABEL": "gcp-x64",
-                "MAX_HEAVY_VMS": "1",
-            }
-        )
-
-
-def test_rejects_a_heavy_pool_with_no_capacity() -> None:
-    with pytest.raises(ValueError, match="MAX_HEAVY_VMS"):
-        Config.from_env(
-            {
-                **ENV,
-                "HEAVY_INSTANCE_TEMPLATE": "projects/p/global/instanceTemplates/heavy",
-                "HEAVY_RUNNER_LABEL": "gcp-x64-heavy",
-                "MAX_HEAVY_VMS": "0",
             }
         )
 
@@ -89,7 +72,6 @@ HEAVY_ENV = {
     **ENV,
     "HEAVY_INSTANCE_TEMPLATE": "projects/p/global/instanceTemplates/heavy",
     "HEAVY_RUNNER_LABEL": "gcp-x64-heavy",
-    "MAX_HEAVY_VMS": "12",
 }
 
 
