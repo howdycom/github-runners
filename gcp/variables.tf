@@ -135,28 +135,6 @@ variable "heavy_runner_label" {
   }
 }
 
-variable "max_heavy_vms" {
-  type        = number
-  description = "Maximum number of heavy VMs at once. This cap is separate from max_vms. Check the regional CPU quota for this machine type: max_heavy_vms times its vCPUs."
-  default     = 12
-
-  validation {
-    condition     = var.max_heavy_vms >= 1
-    error_message = "max_heavy_vms must be at least 1."
-  }
-}
-
-variable "max_vms" {
-  type        = number
-  description = "Maximum number of runner VMs at once. Check the regional CPU quota against max_vms times the machine's vCPUs."
-  default     = 20
-
-  validation {
-    condition     = var.max_vms >= 1
-    error_message = "max_vms must be at least 1."
-  }
-}
-
 variable "idle_timeout_minutes" {
   type        = number
   description = "A VM whose runner has not taken a job after this many minutes powers itself off, and the controller deletes it. This happens, for example, when the job was cancelled while the VM booted."
@@ -211,7 +189,7 @@ variable "runner_group" {
 
 variable "repositories" {
   type        = list(string)
-  description = "Names (without the organization) of the repositories that use these runners. The reconcile job scans them for queued jobs without a VM, for example after a lost webhook or a full pool."
+  description = "Names (without the organization) of the repositories that use these runners. The reconcile job scans them for queued jobs without a VM, for example after a lost webhook or a full CPU quota."
 
   validation {
     condition     = length(var.repositories) > 0

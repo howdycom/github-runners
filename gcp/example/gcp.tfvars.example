@@ -20,6 +20,6 @@ runner_group = "your-runner-group"
 # queued jobs without a VM.
 repositories = ["your-repo"]
 
-# Optional settings (machine_type, max_vms, use_cloud_nat, runner_version and
+# Optional settings (machine_type, use_cloud_nat, runner_version and
 # others) are inputs of the module, with defaults. Set them in main.tf; see
 # ../variables.tf for the full list.
