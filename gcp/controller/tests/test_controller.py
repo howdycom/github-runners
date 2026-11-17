@@ -213,6 +213,25 @@ def test_queued_job_creates_one_vm_with_a_jit_config(github: FakeGitHub, compute
     assert zone == zone_order(("zone-a", "zone-b", "zone-c"), 1001)[0]
 
 
+def test_queued_job_labels_the_vm_with_its_repository_and_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    headers, body = webhook_request("queued", job(1001, name="Unit Tests (shard 4)"))
+    controller(github, compute).handle_webhook(headers, body, SECRET)
+
+    assert compute.insert_labels["ghr-1001"] == {"ghr_repo": "app", "ghr_job": "unit-tests-shard-4"}
+
+
+def test_reconcile_labels_the_vm_with_its_repository_and_job(github: FakeGitHub, compute: FakeCompute) -> None:
+    github.jobs = {
+        "howdycom/app": [
+            {"id": 11, "name": "Build", "labels": ["gcp-x64"], "created_at": "2027-01-15T07:55:00Z"},
+        ]
+    }
+
+    controller(github, compute, repositories=("howdycom/app",)).reconcile()
+
+    assert compute.insert_labels["ghr-11"] == {"ghr_repo": "app", "ghr_job": "build"}
+
+
 def test_duplicate_delivery_does_not_create_a_second_vm(github: FakeGitHub, compute: FakeCompute) -> None:
     ctrl = controller(github, compute)
     headers, body = webhook_request("queued", job(1001))
@@ -306,10 +325,12 @@ def test_concurrent_requests_for_one_job_keep_the_winners_runner(github: FakeGit
     first = controller(github, compute)
     real_insert = compute.insert
 
-    def insert(zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, object]:
+    def insert(
+        zone: str, name: str, template: str, metadata: dict[str, str], labels: dict[str, str] | None = None
+    ) -> dict[str, object]:
         compute.insert = real_insert  # type: ignore[method-assign]
         second.start_runner(1001, deadline=5)
-        return real_insert(zone, name, template, metadata)
+        return real_insert(zone, name, template, metadata, labels)
 
     compute.insert = insert  # type: ignore[method-assign]
 

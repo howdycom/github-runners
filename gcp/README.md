@@ -61,6 +61,17 @@ heavy_fallback_machine_types = ["n2-standard-8"]
 
 No pool has a cap: every queued job gets a VM at once. The regional CPU quota is the only limit, so check it for each machine type separately. N2 and E2 quotas are not the same number.
 
+### VM labels for the billing export
+
+Every runner VM carries labels that the Cloud Billing export keeps, so cost can be split without guessing:
+
+- `ghr_managed` and `ghr_pool`: set by the controller; `ghr_pool` is the name prefix.
+- `ghr_class`: `heavy` on the heavy pool. A VM without it is a standard VM.
+- `ghr_repo`: the repository name without the owner, from the job.
+- `ghr_job`: the job name from the workflow, lowercased and cut to what Compute Engine allows (letters, digits, `_` and `-`, at most 63 characters). A matrix job name such as `Unit Tests (shard 4)` becomes `unit-tests-shard-4`.
+
+The controller adds `ghr_repo` and `ghr_job` when it creates the VM, because they differ per job and an instance template is shared by every job of its pool. A label with no usable value is left out. VMs created before this change do not carry them, and labels may not apply to billing rows exported before they existed.
+
 The VMs of one pool are interchangeable. GitHub gives a new runner any queued job with its label, not the job its VM is named after. So reconcile counts each VM whose runner is not busy as a free runner for one queued job of its pool, and starts a VM for each queued job left over. A job whose own VM took another job gets a VM named `<prefix>-<job id>-2`.
 
 ```yaml
