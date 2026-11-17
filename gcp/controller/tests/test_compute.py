@@ -5,7 +5,16 @@ from typing import Any
 
 import pytest
 
-from ghr.compute import AlreadyExists, Compute, ComputeError, ZoneUnavailable, created_at, zone_of
+from ghr.compute import (
+    AlreadyExists,
+    Compute,
+    ComputeError,
+    ZoneUnavailable,
+    cost_labels,
+    created_at,
+    label_value,
+    zone_of,
+)
 
 API = "https://compute.googleapis.com/compute/v1"
 TEMPLATE = "projects/p/global/instanceTemplates/ghr-runner-1"
@@ -73,6 +82,52 @@ def test_insert_sends_template_metadata_plus_the_jit_config() -> None:
     items = {i["key"]: i["value"] for i in kwargs["json"]["metadata"]["items"]}
     assert items == {"startup-script": "#!/bin/bash", "runner-version": "2.337.0", "jit-config": "abc"}
     assert kwargs["json"]["labels"] == {"ghr_managed": "true", "ghr_pool": "ghr"}
+
+
+def test_insert_adds_the_requested_labels_but_never_overrides_the_managed_ones() -> None:
+    session = FakeSession(get_responses={f"{API}/{TEMPLATE}": [template_response()]})
+    make_compute(session).insert(
+        "zone-a", "ghr-1", TEMPLATE, {}, {"ghr_repo": "astro-market", "ghr_job": "unit-tests", "ghr_pool": "other"}
+    )
+
+    _, _, kwargs = next(c for c in session.calls if c[0] == "POST")
+    assert kwargs["json"]["labels"] == {
+        "ghr_managed": "true",
+        "ghr_pool": "ghr",
+        "ghr_repo": "astro-market",
+        "ghr_job": "unit-tests",
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Unit Tests (shard 4)", "unit-tests-shard-4"),
+        ("E2E / app tests", "e2e-app-tests"),
+        ("  --Lighthouse--  ", "lighthouse"),
+        ("under_score", "under_score"),
+        ("", ""),
+        (None, ""),
+        ("***", ""),
+        ("a" * 80, "a" * 63),
+        ("a" * 62 + " b", "a" * 62),
+    ],
+)
+def test_label_value_follows_the_compute_engine_rules(text: str | None, expected: str) -> None:
+    assert label_value(text) == expected
+
+
+def test_cost_labels_use_the_repository_name_without_the_owner() -> None:
+    assert cost_labels("howdycom/astro-market", "Unit Tests (shard 4)") == {
+        "ghr_repo": "astro-market",
+        "ghr_job": "unit-tests-shard-4",
+    }
+    assert cost_labels("astro-market", "build") == {"ghr_repo": "astro-market", "ghr_job": "build"}
+
+
+def test_cost_labels_leave_out_a_label_with_no_value() -> None:
+    assert cost_labels(None, "") == {}
+    assert cost_labels("howdycom/astro-market", None) == {"ghr_repo": "astro-market"}
 
 
 def test_insert_already_exists() -> None:

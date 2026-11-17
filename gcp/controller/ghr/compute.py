@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -28,6 +29,29 @@ FINISHED_STATES = frozenset({"STOPPING", "STOPPED", "SUSPENDING", "SUSPENDED", "
 
 MANAGED_LABEL = "ghr_managed"
 POOL_LABEL = "ghr_pool"
+REPO_LABEL = "ghr_repo"
+JOB_LABEL = "ghr_job"
+# Compute Engine label values: lowercase letters, digits, "_" and "-", at most 63 characters.
+LABEL_VALUE_MAX = 63
+
+
+def label_value(text: str | None) -> str:
+    """A label value for free text such as a job name. Empty when nothing usable is left."""
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", (text or "").lower())
+    return re.sub(r"-{2,}", "-", cleaned).strip("-")[:LABEL_VALUE_MAX].strip("-")
+
+
+def cost_labels(repository: str | None, job_name: str | None) -> dict[str, str]:
+    """The labels that let the billing export split cost by repository and by job.
+
+    The repository is its name without the owner. A label with no usable
+    value is left out, because Compute Engine would otherwise store an empty one.
+    """
+    labels = {
+        REPO_LABEL: label_value((repository or "").rsplit("/", 1)[-1]),
+        JOB_LABEL: label_value(job_name),
+    }
+    return {key: value for key, value in labels.items() if value}
 
 
 class ComputeError(Exception):
@@ -70,7 +94,14 @@ class Compute:
             return instance
         return None
 
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
+    def insert(
+        self,
+        zone: str,
+        name: str,
+        template: str,
+        metadata: dict[str, str],
+        labels: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Sends the request that creates a VM from the template, and returns its operation.
 
         Raises AlreadyExists. The VM is listed as soon as this returns, so the
@@ -84,7 +115,7 @@ class Compute:
             # Sent in full, so the result never depends on how Compute Engine
             # merges request metadata with template metadata.
             "metadata": {"items": [{"key": key, "value": value} for key, value in items.items()]},
-            "labels": {**properties.get("labels", {}), MANAGED_LABEL: "true", POOL_LABEL: self._pool},
+            "labels": {**properties.get("labels", {}), **(labels or {}), MANAGED_LABEL: "true", POOL_LABEL: self._pool},
         }
         response = self._session.post(
             f"{API_URL}/projects/{self._project}/zones/{zone}/instances",
