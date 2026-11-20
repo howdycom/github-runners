@@ -33,6 +33,8 @@ PLAYWRIGHT_CHROMIUM_PACKAGES=(
   xfonts-cyrillic xfonts-scalable fonts-liberation fonts-ipafont-gothic
   fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf
 )
+PNPM_VERSION=12.15.0
+CI_SERVICE_IMAGES=(mysql:8.0 redis:7-alpine axllent/mailpit:latest)
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/instance/attributes
 APT_OPTS=(-o DPkg::Lock::Timeout=600 -y --no-install-recommends)
 
@@ -141,6 +143,18 @@ install_node() {
   chown -R "${RUNNER_USER}:${RUNNER_USER}" /usr/local/lib/node_modules /usr/local/bin
 }
 
+# Bakes what every heavy CI job otherwise fetches at start: the pnpm CLI and
+# the service images the E2E legs start. Keep the versions in step with
+# astro-market (package.json packageManager and scripts/startCiServices.mjs).
+# A stale image only costs the old download time, jobs still pull what differs.
+preload_ci_tools() {
+  npm install -g "pnpm@${PNPM_VERSION}"
+  local image
+  for image in "${CI_SERVICE_IMAGES[@]}"; do
+    docker pull "${image}"
+  done
+}
+
 # Downloads the runner and checks it against the pinned SHA-256 (Terraform
 # variable runner_sha256), so a boot makes no GitHub API call.
 install_runner() {
@@ -161,6 +175,7 @@ install_runner() {
 
 bake() {
   install_runner_host
+  preload_ci_tools
   apt-get clean
   rm -rf /var/lib/apt/lists/* /tmp/*
   log "bake complete"
