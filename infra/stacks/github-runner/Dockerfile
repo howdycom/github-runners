@@ -3,7 +3,7 @@ FROM ubuntu:22.04
 ARG RUNNER_VERSION=2.336.0
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl tar jq sudo git ca-certificates libicu-dev gh make gnupg \
+  && apt-get install -y --no-install-recommends curl tar jq sudo git ca-certificates libicu-dev gh make gnupg unzip zip xz-utils \
   && install -m 0755 -d /etc/apt/keyrings \
   && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
   && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -12,7 +12,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin \
   && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m githubrunner
+# Passwordless sudo, matching GitHub-hosted runners, so workflow steps can
+# `sudo apt-get install` (e.g. Playwright install-deps). Relies on ephemeral
+# runners (RUNNER_EPHEMERAL=true, one job per registration). Note the container
+# restarts rather than being recreated, so root-level changes outside _work can
+# persist into later jobs on the same container; recreate containers to reset.
+RUN useradd -m githubrunner \
+  && echo 'githubrunner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/githubrunner \
+  && chmod 0440 /etc/sudoers.d/githubrunner \
+  && visudo -cf /etc/sudoers.d/githubrunner
 WORKDIR /home/githubrunner/actions-runner
 
 # Download the runner at build time, not at container start. Both tiers share
