@@ -11,12 +11,15 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from . import log
-from .compute import ACTIVE_STATES, FINISHED_STATES, AlreadyExists, ZoneUnavailable, created_at
+from .compute import ACTIVE_STATES, FINISHED_STATES, AlreadyExists, ZoneUnavailable, cost_labels, created_at
 from .config import Config, RunnerPool
 from .github import RunnerNameTaken, verify_signature
 from .timestamps import parse_timestamp
 
 # GitHub waits 10 seconds for a webhook response.
+# The repository a queued job came from. GitHub's job JSON does not carry it, so
+# the reconcile listing adds it for the VM labels.
+QUEUED_REPOSITORY_KEY = "_repository"
 WEBHOOK_DEADLINE_SECONDS = 8.0
 # A queued job gets this long for its webhook to start a VM before the
 # reconcile job starts one. Longer than the webhook function timeout (30s),
@@ -190,6 +193,7 @@ class Controller:
             int(job["id"]),
             self._monotonic() + WEBHOOK_DEADLINE_SECONDS,
             job_labels=job.get("labels", []),
+            vm_labels=cost_labels(repository.get("full_name"), job.get("name")),
         )
         return 200, {"result": result}
 
@@ -220,13 +224,15 @@ class Controller:
         job_labels: Iterable[str] | None = None,
         name: str | None = None,
         wait_for_start: bool = True,
+        vm_labels: dict[str, str] | None = None,
     ) -> StartResult:
         """Creates the VM for a queued job. Safe to call more than once per job.
 
         The attempt number rotates the zone order, so a retry after a late
         capacity failure does not start in the same zone again. job_labels
         selects the pool. Callers that omit them get the standard pool. name
-        overrides the VM name, for a job whose own VM took another job.
+        overrides the VM name, for a job whose own VM took another job. vm_labels
+        go on the VM next to the template labels, for the billing export.
         """
         pool = self._config.standard_pool() if job_labels is None else pool_for(self._config, job_labels)
         if pool is None:
@@ -239,7 +245,7 @@ class Controller:
         runner_id, jit_config = self._register_runner(name, pool)
         try:
             result = self._create_vm(
-                job_id, name, jit_config, deadline, attempt, pool, wait_for_start=wait_for_start
+                job_id, name, jit_config, deadline, attempt, pool, wait_for_start=wait_for_start, vm_labels=vm_labels
             )
         except Exception:
             self._github.delete_runner(runner_id)
@@ -260,6 +266,7 @@ class Controller:
         attempt: int,
         pool: RunnerPool,
         wait_for_start: bool = True,
+        vm_labels: dict[str, str] | None = None,
     ) -> StartResult:
         # Every zone with the pool's own machine type first. A fallback type is
         # used only when no zone has capacity for the one before it, or after
@@ -271,7 +278,7 @@ class Controller:
                 try:
                     # No cap and no lock: every queued job gets a VM at once. The
                     # VM name is unique per job, so a duplicate request fails here.
-                    operation = self._compute.insert(zone, name, template, {"jit-config": jit_config})
+                    operation = self._compute.insert(zone, name, template, {"jit-config": jit_config}, vm_labels)
                 except AlreadyExists:
                     return StartResult.EXISTS
 
@@ -409,6 +416,7 @@ class Controller:
                     job_labels=job.get("labels", []),
                     name=name,
                     wait_for_start=False,
+                    vm_labels=cost_labels(job.get(QUEUED_REPOSITORY_KEY), job.get("name")),
                 )
             except Exception as exc:
                 summary["errors"] += 1
@@ -490,5 +498,9 @@ class Controller:
             except Exception as exc:
                 log.error("could not list queued jobs", repository=repository, detail=str(exc))
                 continue
-            queued.extend(job for job in jobs if wants_runner(self._config, job.get("labels", [])))
+            queued.extend(
+                {**job, QUEUED_REPOSITORY_KEY: repository}
+                for job in jobs
+                if wants_runner(self._config, job.get("labels", []))
+            )
         return queued

@@ -145,6 +145,8 @@ class FakeCompute:
         }
     )
     inserts: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
+    # The labels each insert asked for on top of the template's, by VM name.
+    insert_labels: dict[str, dict[str, str]] = field(default_factory=dict)
     templates: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
@@ -154,8 +156,16 @@ class FakeCompute:
     def find(self, name: str) -> dict[str, Any] | None:
         return self.instances.get(name)
 
-    def insert(self, zone: str, name: str, template: str, metadata: dict[str, str]) -> dict[str, Any]:
+    def insert(
+        self,
+        zone: str,
+        name: str,
+        template: str,
+        metadata: dict[str, str],
+        labels: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         self.inserts.append((zone, name, metadata))
+        self.insert_labels[name] = dict(labels or {})
         self.templates.append(template)
         if self.fail_insert:
             raise self.fail_insert
@@ -166,7 +176,7 @@ class FakeCompute:
             # Compute Engine accepts the request; the operation fails later.
             return {"zone": zone, "full": True}
         # The real insert copies the labels of the instance template.
-        created = instance(name, "PROVISIONING", zone, age_seconds=0, labels=dict(self.template_labels[template]))
+        created = instance(name, "PROVISIONING", zone, age_seconds=0, labels={**self.template_labels[template], **(labels or {})})
         self.instances[name] = created
         return {"zone": zone, "full": False}
 
