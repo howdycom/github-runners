@@ -122,6 +122,15 @@ def test_pins_node_22_23_4_and_the_ubuntu_ca_certificates_floor() -> None:
     assert "20260816ubuntu0.24.04.1" in script
 
 
+def test_bakes_pnpm_and_the_ci_service_images() -> None:
+    script = STARTUP.read_text()
+    assert "PNPM_VERSION=12.15.0" in script
+    for image in ("mysql:8.0", "redis:7-alpine", "axllent/mailpit:latest"):
+        assert image in script
+    bake_body = script.split("bake() {", 1)[1].split("\n}", 1)[0]
+    assert "preload_ci_tools" in bake_body
+
+
 def test_powers_off_without_a_jit_config(harness: Harness) -> None:
     result = harness.run()
     assert result.returncode == 0
